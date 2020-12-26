@@ -137,7 +137,7 @@ int32_t cRequestPacket::extract_S32()
   return l;
 }
 
-uint8_t* cRequestPacket::getData()
-{
-  return userData;
-}
+//uint8_t* cRequestPacket::getData()
+//{
+//  return userData;
+//}

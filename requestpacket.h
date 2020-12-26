@@ -62,7 +62,7 @@ public:
   bool      end() const;
 
   // If you call this, the memory becomes yours. Free with free()
-  uint8_t* getData();
+  //uint8_t* getData();
 
 private:
   uint8_t* userData;
