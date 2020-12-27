@@ -23,6 +23,8 @@
  *
  */
 
+#define DISABLE_TEMPLATES_COLLIDING_WITH_STL
+
 #include "vnsiclient.h"
 #include "vnsi.h"
 #include "config.h"
@@ -37,13 +39,16 @@
 #include "hash.h"
 #include "channelfilter.h"
 #include "channelscancontrol.h"
+#include "StatusCommands.h"
 #include <sys/types.h>
 #include <dirent.h>
 #include <stdlib.h>
 #include <stdio.h>
+
 #include <map>
 #include <memory>
 #include <string>
+#include <chrono>
 
 #include <vdr/recording.h>
 #include <vdr/channels.h>
@@ -58,10 +63,10 @@ bool cVNSIClient::m_inhibidDataUpdates = false;
 
 cVNSIClient::cVNSIClient(int fd, unsigned int id, const char *ClientAdr, CVNSITimers &timers)
   : m_Id(id),
-    m_socket(fd),
     m_ClientAddress(ClientAdr),
     m_ChannelScanControl(this),
-    m_vnsiTimers(timers)
+    m_vnsiTimers(timers),
+    m_socket(fd, *this)
 {
   SetDescription("VNSI Client %u->%s", id, ClientAdr);
 
@@ -74,327 +79,319 @@ cVNSIClient::~cVNSIClient()
   DEBUGLOG("%s", __FUNCTION__);
   StopChannelStreaming();
   m_ChannelScanControl.StopScan();
-  m_socket.Shutdown();
   Cancel(10);
   DEBUGLOG("done");
 }
 
-void cVNSIClient::Action(void)
+void
+cVNSIClient::Action()
 {
-  uint32_t channelID;
-  uint32_t requestID;
-  uint32_t opcode;
-  uint32_t dataLength;
-  uint8_t* data;
+	while (Running())
+	{
+		try
+		{
+			std::unique_lock<std::mutex> lock( m_QueueMutex );
+			if ( m_QueueCondVar.wait_for(lock, std::chrono::milliseconds(100), [this]()
+				{
+					return m_Queue.size() > 0;
+				}))
+			{
+				auto command = std::move(m_Queue.front());
+				m_Queue.pop_front();
+				lock.unlock();
 
-  while (Running())
-  {
-    if (!m_socket.read((uint8_t*)&channelID, sizeof(uint32_t)))
-      break;
+				command->execute(*this);
+			}
+		}
+		catch ( const std::exception& error )
+		{
+			ERRORLOG( "Client error: '%s'. Dropping client", error.what() );
+			break;
+		}
+		catch ( ... )
+		{
+			ERRORLOG( "Client error: 'Undetermined exception'. Dropping client" );
+			break;
+		}
+	}
 
-    channelID = ntohl(channelID);
-    if (channelID == 1)
-    {
-      if (!m_socket.read((uint8_t*)&requestID, sizeof(uint32_t), 10000))
-        break;
+	// If thread is ended due to closed connection delete a
+	// possible running stream here
+	StopChannelStreaming();
+	m_ChannelScanControl.StopScan();
 
-      requestID = ntohl(requestID);
-
-      if (!m_socket.read((uint8_t*)&opcode, sizeof(uint32_t), 10000))
-        break;
-
-      opcode = ntohl(opcode);
-
-      if (!m_socket.read((uint8_t*)&dataLength, sizeof(uint32_t), 10000))
-        break;
-
-      dataLength = ntohl(dataLength);
-      if (dataLength > 200000) // a random sanity limit
-      {
-        ERRORLOG("dataLength > 200000!");
-        break;
-      }
-
-      if (dataLength)
-      {
-        try
-        {
-          data = new uint8_t[dataLength];
-        }
-        catch (const std::bad_alloc &)
-        {
-          ERRORLOG("Extra data buffer malloc error");
-          break;
-        }
-
-        if (!m_socket.read(data, dataLength, 10000))
-        {
-          ERRORLOG("Could not read data");
-          free(data);
-          break;
-        }
-      }
-      else
-      {
-        data = NULL;
-      }
-
-      DEBUGLOG("Received chan=%u, ser=%u, op=%u, edl=%u", channelID, requestID, opcode, dataLength);
-
-      if (!m_loggedIn && (opcode != VNSI_LOGIN))
-      {
-        ERRORLOG("Clients must be logged in before sending commands! Aborting.");
-        if (data)
-          free(data);
-        break;
-      }
-
-      if (opcode == VNSI_INVALIDATESOCKET)
-      {
-        cRequestPacket req(requestID, opcode, data, dataLength);
-        process_InvalidateSocket(req);
-        break;
-      }
-
-      try
-      {
-        cRequestPacket req(requestID, opcode, data, dataLength);
-        processRequest(req);
-      }
-      catch (const std::exception &e)
-      {
-        ERRORLOG("%s", e.what());
-        break;
-      }
-    }
-    else
-    {
-      ERRORLOG("Incoming channel number unknown");
-      break;
-    }
-  }
-
-  // If thread is ended due to closed connection delete a
-  // possible running stream here
-  StopChannelStreaming();
-  m_ChannelScanControl.StopScan();
-
-  // Shutdown OSD
-  delete m_Osd;
-  m_Osd = NULL;
+	// Shutdown OSD
+	m_Osd.reset();
 }
 
-bool cVNSIClient::StartChannelStreaming(cResponsePacket &resp, const cChannel *channel, int32_t priority, uint8_t timeshift, uint32_t timeout)
+bool
+cVNSIClient::StartChannelStreaming(cResponsePacket &resp, const cChannel *channel, int32_t priority, uint8_t timeshift, uint32_t timeout)
 {
-  delete m_Streamer;
-  m_Streamer = new cLiveStreamer(m_Id, m_bSupportRDS, m_protocolVersion, timeshift, timeout);
+  m_Streamer.reset( new cLiveStreamer(m_Id, m_bSupportRDS, m_protocolVersion, timeshift, timeout) );
   m_isStreaming = m_Streamer->StreamChannel(channel, priority, &m_socket, &resp);
   return m_isStreaming;
 }
 
-void cVNSIClient::StopChannelStreaming()
+void
+cVNSIClient::StopChannelStreaming()
 {
   m_isStreaming = false;
-  delete m_Streamer;
-  m_Streamer = NULL;
+  m_Streamer.reset();
 }
 
-void cVNSIClient::SignalTimerChange()
+void
+cVNSIClient::SignalTimerChange()
 {
-  cMutexLock lock(&m_msgLock);
-
-  if (m_StatusInterfaceEnabled)
-  {
-    cResponsePacket resp;
-    resp.initStatus(VNSI_STATUS_TIMERCHANGE);
-    resp.finalise();
-    m_socket.write(resp.getPtr(), resp.getLen());
-  }
+	enqueue( std::make_shared<StatusSignalTimerChange>() );
 }
 
-void cVNSIClient::ChannelsChange()
+void
+cVNSIClient::ChannelsChange()
 {
-  cMutexLock lock(&m_msgLock);
-
-  if (!m_StatusInterfaceEnabled)
-    return;
-
-  cResponsePacket resp;
-  resp.initStatus(VNSI_STATUS_CHANNELCHANGE);
-  resp.finalise();
-  m_socket.write(resp.getPtr(), resp.getLen());
+	enqueue( std::make_shared<StatusChannelsChange>() );
 }
 
-void cVNSIClient::RecordingsChange()
+void
+cVNSIClient::RecordingsChange()
 {
-  cMutexLock lock(&m_msgLock);
-
-  if (!m_StatusInterfaceEnabled)
-    return;
-
-  cResponsePacket resp;
-  resp.initStatus(VNSI_STATUS_RECORDINGSCHANGE);
-  resp.finalise();
-  m_socket.write(resp.getPtr(), resp.getLen());
+	enqueue( std::make_shared<StatusRecordingsChange>() );
 }
 
-int cVNSIClient::EpgChange()
+void
+cVNSIClient::EpgChange()
 {
-  int callAgain = 0;
+	enqueue( std::make_shared<StatusEpgChange>() );
+}
 
-  cMutexLock lock(&m_msgLock);
+void cVNSIClient::enqueue( const ICommandSharedPtr& command )
+{
+	std::unique_lock<std::mutex> lock( m_QueueMutex );
+	m_Queue.push_back( command );
+	m_QueueCondVar.notify_one();
+}
 
-  if (!m_StatusInterfaceEnabled)
-    return callAgain;
+void
+cVNSIClient::visit( cRequestPacket& command )
+{
+	if (!m_loggedIn && (command.getOpCode() != VNSI_LOGIN) )
+	{
+		ERRORLOG("Clients must be logged in before sending commands! Aborting.");
+		return;
 
-#if VDRVERSNUM >= 20301
-  LOCK_CHANNELS_READ;
-  cStateKey SchedulesStateKey(true);
-  const cSchedules *schedules = cSchedules::GetSchedulesRead(SchedulesStateKey);
-  if (!schedules)
-  {
-    return callAgain;
-  }
-#else
-  cSchedulesLock MutexLock;
-  const cSchedules *schedules = cSchedules::Schedules(MutexLock);
-  if (!schedules)
-    return callAgain;
-#endif
+	}
+	if ( VNSI_INVALIDATESOCKET == command.getOpCode() )
+	{
+		process_InvalidateSocket(command);
+		return;
+	}
 
-  for (const cSchedule *schedule = schedules->First(); schedule; schedule = schedules->Next(schedule))
-  {
-    const cEvent *lastEvent =  schedule->Events()->Last();
-    if (!lastEvent)
-      continue;
-
-#if VDRVERSNUM >= 20301
-    const cChannel *channel = Channels->GetByChannelID(schedule->ChannelID());
-#else
-    Channels.Lock(false);
-    const cChannel *channel = Channels.GetByChannelID(schedule->ChannelID());
-    Channels.Unlock();
-#endif
-
-    if (!channel)
-      continue;
-
-    if (!VNSIChannelFilter.PassFilter(*channel))
-      continue;
-
-    uint32_t channelId = CreateStringHash(schedule->ChannelID().ToString());
-    auto it = m_epgUpdate.find(channelId);
-    if (it == m_epgUpdate.end() || it->second.attempts > 3 ||
-        it->second.lastEvent >= lastEvent->StartTime())
+    try
     {
-      continue;
+    	if ( !processRequest(command) )
+    	{
+    		Cancel( -1 );
+    	}
     }
-
-    time_t now = time(nullptr);
-    if ((now - it->second.lastTrigger) < 5)
+    catch (const std::exception &e)
     {
-      callAgain = VNSI_EPG_PAUSE;
-      continue;
+    	ERRORLOG("VNSIClient: Caught exception: %s", e.what());
     }
+}
 
-    it->second.attempts++;
-    it->second.lastTrigger = now;
+void
+cVNSIClient::visit( SocketError& command )
+{
+	// Set running flag to false. The thread will exit and the server will
+	// delete the client
+	Cancel( -1 );
+}
 
-    DEBUGLOG("Trigger EPG update for channel %s, id: %d", channel->Name(), channelId);
+void
+cVNSIClient::visit( StatusRecording& command )
+{
+	if (m_StatusInterfaceEnabled)
+	{
+		cResponsePacket resp;
+	    resp.initStatus(VNSI_STATUS_RECORDING);
+	    resp.add_U32( command.getDeviceIndex() );
+	    resp.add_U32( command.isOn() );
+	    resp.add_String( command.getName().c_str() );
+	    resp.add_String( command.getFileName().c_str() );
+	    resp.finalise();
+	    m_socket.write(resp.getPtr(), resp.getLen());
+	}
+}
 
-    cResponsePacket resp;
-    resp.initStatus(VNSI_STATUS_EPGCHANGE);
-    resp.add_U32(channelId);
-    resp.finalise();
-    m_socket.write(resp.getPtr(), resp.getLen());
+void
+cVNSIClient::visit( StatusOsdStatusMessage& command )
+{
+	const auto& Message = command.getMessage();
 
-    callAgain = VNSI_EPG_AGAIN;
-    break;
-  }
+	if (m_StatusInterfaceEnabled && !Message.empty())
+	{
+	    /* Ignore this messages */
+	    if (strcasecmp(Message.c_str(), trVDR("Channel not available!")) == 0) return;
+	    else if (strcasecmp(Message.c_str(), trVDR("Delete timer?")) == 0) return;
+	    else if (strcasecmp(Message.c_str(), trVDR("Delete recording?")) == 0) return;
+	    else if (strcasecmp(Message.c_str(), trVDR("Press any key to cancel shutdown")) == 0) return;
+	    else if (strcasecmp(Message.c_str(), trVDR("Press any key to cancel restart")) == 0) return;
+	    else if (strcasecmp(Message.c_str(), trVDR("Editing - shut down anyway?")) == 0) return;
+	    else if (strcasecmp(Message.c_str(), trVDR("Recording - shut down anyway?")) == 0) return;
+	    else if (strcasecmp(Message.c_str(), trVDR("shut down anyway?")) == 0) return;
+	    else if (strcasecmp(Message.c_str(), trVDR("Recording - restart anyway?")) == 0) return;
+	    else if (strcasecmp(Message.c_str(), trVDR("Editing - restart anyway?")) == 0) return;
+	    else if (strcasecmp(Message.c_str(), trVDR("Delete channel?")) == 0) return;
+	    else if (strcasecmp(Message.c_str(), trVDR("Timer still recording - really delete?")) == 0) return;
+	    else if (strcasecmp(Message.c_str(), trVDR("Delete marks information?")) == 0) return;
+	    else if (strcasecmp(Message.c_str(), trVDR("Delete resume information?")) == 0) return;
+	    else if (strcasecmp(Message.c_str(), trVDR("CAM is in use - really reset?")) == 0) return;
+	    else if (strcasecmp(Message.c_str(), trVDR("CAM activated!")) == 0) return;
+	    else if (strcasecmp(Message.c_str(), trVDR("Really restart?")) == 0) return;
+	    else if (strcasecmp(Message.c_str(), trVDR("Stop recording?")) == 0) return;
+	    else if (strcasecmp(Message.c_str(), trVDR("Cancel editing?")) == 0) return;
+	    else if (strcasecmp(Message.c_str(), trVDR("Cutter already running - Add to cutting queue?")) == 0) return;
+	    else if (strcasecmp(Message.c_str(), trVDR("No index-file found. Creating may take minutes. Create one?")) == 0) return;
+	    else if (strcasecmp(Message.c_str(), trVDR("Low disk space!")) == 0) return;
+	    else if (strncmp(Message.c_str(), trVDR("VDR will shut down in"), 21) == 0) return;
 
-#if VDRVERSNUM >= 20301
-  SchedulesStateKey.Remove();
-#endif
+	    cResponsePacket resp;
+	    resp.initStatus(VNSI_STATUS_MESSAGE);
+	    resp.add_U32(0);
+	    resp.add_String(Message.c_str());
+	    resp.finalise();
+	    m_socket.write(resp.getPtr(), resp.getLen());
+	}
+}
 
-  return callAgain;
+void
+cVNSIClient::visit( StatusChannelChange& command )
+{
+	if (m_isStreaming && m_Streamer)
+	{
+	    m_Streamer->RetuneChannel( &command.getChannel() );
+	}
+}
+
+void
+cVNSIClient::visit( StatusChannelsChange& )
+{
+	if (!m_StatusInterfaceEnabled)
+	    return;
+
+	cResponsePacket resp;
+	resp.initStatus(VNSI_STATUS_CHANNELCHANGE);
+	resp.finalise();
+	m_socket.write(resp.getPtr(), resp.getLen());
+}
+
+void
+cVNSIClient::visit( StatusRecordingsChange& )
+{
+	if (!m_StatusInterfaceEnabled)
+		return;
+
+	cResponsePacket resp;
+	resp.initStatus(VNSI_STATUS_RECORDINGSCHANGE);
+	resp.finalise();
+	m_socket.write(resp.getPtr(), resp.getLen());
+}
+
+void
+cVNSIClient::visit( StatusSignalTimerChange& command )
+{
+	if (m_StatusInterfaceEnabled)
+	{
+		cResponsePacket resp;
+	    resp.initStatus(VNSI_STATUS_TIMERCHANGE);
+	    resp.finalise();
+	    m_socket.write(resp.getPtr(), resp.getLen());
+	}
+}
+
+void
+cVNSIClient::visit( StatusEpgChange& command )
+{
+	if (!m_StatusInterfaceEnabled)
+		return; // callAgain;
+
+	LOCK_CHANNELS_READ;
+	cStateKey SchedulesStateKey(true);
+	const cSchedules *schedules = cSchedules::GetSchedulesRead(SchedulesStateKey);
+	if (!schedules)
+	{
+		return;
+	}
+
+	for (const cSchedule *schedule = schedules->First(); schedule; schedule = schedules->Next(schedule))
+	{
+		const cEvent *lastEvent =  schedule->Events()->Last();
+	    if (!lastEvent)
+	    	continue;
+
+	    const cChannel *channel = Channels->GetByChannelID(schedule->ChannelID());
+	    if (!channel)
+	    	continue;
+
+	    if (!VNSIChannelFilter.PassFilter(*channel))
+	    	continue;
+
+	    uint32_t channelId = CreateStringHash(schedule->ChannelID().ToString());
+	    auto it = m_epgUpdate.find(channelId);
+	    if (it == m_epgUpdate.end() || it->second.attempts > 3 ||
+	        it->second.lastEvent >= lastEvent->StartTime())
+	    {
+	    	continue;
+	    }
+
+	    time_t now = time(nullptr);
+	    if ((now - it->second.lastTrigger) < 5)
+	    {
+	    	continue;
+	    }
+
+	    it->second.attempts++;
+	    it->second.lastTrigger = now;
+
+	    DEBUGLOG("Trigger EPG update for channel %s, id: %d", channel->Name(), channelId);
+
+	    cResponsePacket resp;
+	    resp.initStatus(VNSI_STATUS_EPGCHANGE);
+	    resp.add_U32(channelId);
+	    resp.finalise();
+	    m_socket.write(resp.getPtr(), resp.getLen());
+
+	    break;
+	}
+
+	SchedulesStateKey.Remove();
 }
 
 void cVNSIClient::Recording(const cDevice *Device, const char *Name, const char *FileName, bool On)
 {
-  if (m_StatusInterfaceEnabled)
-  {
-    cResponsePacket resp;
-    resp.initStatus(VNSI_STATUS_RECORDING);
-    resp.add_U32(Device->CardIndex());
-    resp.add_U32(On);
-    if (Name)
-      resp.add_String(Name);
-    else
-      resp.add_String("");
+	enqueue( std::make_shared<StatusRecording>(
+		Device->DeviceNumber(), Name ? Name : "", FileName ? FileName : "", On
+	) );
 
-    if (FileName)
-      resp.add_String(FileName);
-    else
-      resp.add_String("");
-
-    resp.finalise();
-    m_socket.write(resp.getPtr(), resp.getLen());
-  }
 }
 
 void cVNSIClient::OsdStatusMessage(const char *Message)
 {
-  if (m_StatusInterfaceEnabled && Message)
-  {
-    /* Ignore this messages */
-    if (strcasecmp(Message, trVDR("Channel not available!")) == 0) return;
-    else if (strcasecmp(Message, trVDR("Delete timer?")) == 0) return;
-    else if (strcasecmp(Message, trVDR("Delete recording?")) == 0) return;
-    else if (strcasecmp(Message, trVDR("Press any key to cancel shutdown")) == 0) return;
-    else if (strcasecmp(Message, trVDR("Press any key to cancel restart")) == 0) return;
-    else if (strcasecmp(Message, trVDR("Editing - shut down anyway?")) == 0) return;
-    else if (strcasecmp(Message, trVDR("Recording - shut down anyway?")) == 0) return;
-    else if (strcasecmp(Message, trVDR("shut down anyway?")) == 0) return;
-    else if (strcasecmp(Message, trVDR("Recording - restart anyway?")) == 0) return;
-    else if (strcasecmp(Message, trVDR("Editing - restart anyway?")) == 0) return;
-    else if (strcasecmp(Message, trVDR("Delete channel?")) == 0) return;
-    else if (strcasecmp(Message, trVDR("Timer still recording - really delete?")) == 0) return;
-    else if (strcasecmp(Message, trVDR("Delete marks information?")) == 0) return;
-    else if (strcasecmp(Message, trVDR("Delete resume information?")) == 0) return;
-    else if (strcasecmp(Message, trVDR("CAM is in use - really reset?")) == 0) return;
-    else if (strcasecmp(Message, trVDR("CAM activated!")) == 0) return;
-    else if (strcasecmp(Message, trVDR("Really restart?")) == 0) return;
-    else if (strcasecmp(Message, trVDR("Stop recording?")) == 0) return;
-    else if (strcasecmp(Message, trVDR("Cancel editing?")) == 0) return;
-    else if (strcasecmp(Message, trVDR("Cutter already running - Add to cutting queue?")) == 0) return;
-    else if (strcasecmp(Message, trVDR("No index-file found. Creating may take minutes. Create one?")) == 0) return;
-    else if (strcasecmp(Message, trVDR("Low disk space!")) == 0) return;
-    else if (strncmp(Message, trVDR("VDR will shut down in"), 21) == 0) return;
-
-    cResponsePacket resp;
-    resp.initStatus(VNSI_STATUS_MESSAGE);
-    resp.add_U32(0);
-    resp.add_String(Message);
-    resp.finalise();
-    m_socket.write(resp.getPtr(), resp.getLen());
-  }
+	enqueue( std::make_shared<StatusOsdStatusMessage>(
+		Message ? Message : ""
+	) );
 }
 
 #if VDRVERSNUM >= 20104
 void cVNSIClient::ChannelChange(const cChannel *Channel)
 {
-  cMutexLock lock(&m_msgLock);
-  if (m_isStreaming && m_Streamer)
-  {
-    m_Streamer->RetuneChannel(Channel);
-  }
+	enqueue( std::make_shared<StatusChannelChange>(
+	   *Channel
+	) );
 }
 #endif
 
 bool cVNSIClient::processRequest(cRequestPacket &req)
 {
-  cMutexLock lock(&m_msgLock);
-
   bool result = false;
   switch(req.getOpCode())
   {
@@ -662,7 +659,7 @@ bool cVNSIClient::process_Login(cRequestPacket &req) /* OPCODE 1 */
   INFOLOG("Welcome client '%s' with protocol version '%u'", clientName, m_protocolVersion);
 
   // Send the login reply
-  time_t timeNow        = time(NULL);
+  time_t timeNow        = time(nullptr);
   struct tm* timeStruct = localtime(&timeNow);
   int timeOffset        = timeStruct->tm_gmtoff;
 
@@ -676,9 +673,14 @@ bool cVNSIClient::process_Login(cRequestPacket &req) /* OPCODE 1 */
   resp.finalise();
 
   if (m_protocolVersion < VNSI_MIN_PROTOCOLVERSION)
+  {
     ERRORLOG("Client '%s' have a not allowed protocol version '%u', terminating client", clientName, m_protocolVersion);
+    return false;
+  }
   else
-    SetLoggedIn(true);
+  {
+    m_loggedIn = true;
+  }
 
   if (m_protocolVersion < VNSI_RDS_PROTOCOLVERSION)
   {
@@ -697,7 +699,7 @@ bool cVNSIClient::process_Login(cRequestPacket &req) /* OPCODE 1 */
 
 bool cVNSIClient::process_GetTime(cRequestPacket &req) /* OPCODE 2 */
 {
-  time_t timeNow        = time(NULL);
+  time_t timeNow        = time(nullptr);
   struct tm* timeStruct = localtime(&timeNow);
   int timeOffset        = timeStruct->tm_gmtoff;
 
@@ -714,7 +716,7 @@ bool cVNSIClient::process_EnableStatusInterface(cRequestPacket &req)
 {
   bool enabled = req.extract_U8();
 
-  SetStatusInterface(enabled);
+  m_StatusInterfaceEnabled = enabled;
   SetPriority(1);
 
   cResponsePacket resp;
@@ -838,7 +840,7 @@ bool cVNSIClient::processChannelStream_Open(cRequestPacket &req) /* OPCODE 20 */
   const cChannel *channel = FindChannelByUID(uid);
 
   // try channelnumber
-  if (channel == NULL)
+  if (channel == nullptr)
   {
 #if VDRVERSNUM >= 20301
     LOCK_CHANNELS_READ;
@@ -851,7 +853,7 @@ bool cVNSIClient::processChannelStream_Open(cRequestPacket &req) /* OPCODE 20 */
   cResponsePacket resp;
   resp.init(req.getRequestID());
 
-  if (channel == NULL) {
+  if (channel == nullptr) {
     ERRORLOG("Can't find channel %08x", uid);
     resp.add_U32(VNSI_RET_DATAINVALID);
   }
@@ -943,7 +945,7 @@ bool cVNSIClient::processChannelStream_StatusRequest(cRequestPacket &req) /* OPC
 
 bool cVNSIClient::processRecStream_Open(cRequestPacket &req) /* OPCODE 40 */
 {
-  const cRecording *recording = NULL;
+  const cRecording *recording = nullptr;
 
   uint32_t uid = req.extract_U32();
   recording = cRecordingsCache::GetInstance().Lookup(uid);
@@ -951,9 +953,9 @@ bool cVNSIClient::processRecStream_Open(cRequestPacket &req) /* OPCODE 40 */
   cResponsePacket resp;
   resp.init(req.getRequestID());
 
-  if (recording && m_RecPlayer == NULL)
+  if (recording && m_RecPlayer == nullptr)
   {
-    m_RecPlayer = new cRecPlayer(recording);
+    m_RecPlayer.reset( new cRecPlayer(recording) );
 
     resp.add_U32(VNSI_RET_OK);
     resp.add_U32(m_RecPlayer->getLengthFrames());
@@ -974,8 +976,7 @@ bool cVNSIClient::processRecStream_Open(cRequestPacket &req) /* OPCODE 40 */
 
 bool cVNSIClient::processRecStream_Close(cRequestPacket &req) /* OPCODE 41 */
 {
-  delete m_RecPlayer;
-  m_RecPlayer = NULL;
+  m_RecPlayer.reset();
 
   cResponsePacket resp;
   resp.init(req.getRequestID());
@@ -1349,7 +1350,7 @@ bool cVNSIClient::processCHANNELS_GetCaids(cRequestPacket &req)
   cResponsePacket resp;
   resp.init(req.getRequestID());
 
-  if (channel != NULL)
+  if (channel != nullptr)
   {
     int caid;
     int idx = 0;
@@ -1766,7 +1767,7 @@ bool cVNSIClient::processTIMER_Add(cRequestPacket &req) /* OPCODE 83 */
   // handle instant timers
   if(startTime == -1 || startTime == 0)
   {
-    startTime = time(NULL);
+    startTime = time(nullptr);
   }
 
   struct tm tm_r;
@@ -1782,7 +1783,7 @@ bool cVNSIClient::processTIMER_Add(cRequestPacket &req) /* OPCODE 83 */
 
   cString buffer;
   const cChannel* channel = FindChannelByUID(channelid);
-  if(channel != NULL)
+  if(channel != nullptr)
   {
     buffer = cString::sprintf("%u:%s:%s:%04d:%04d:%d:%d:%s:%s\n", flags, (const char*)channel->GetChannelID().ToString(), *cTimer::PrintDay(day, weekdays, true), start, stop, priority, lifetime, file, aux);
   }
@@ -1890,7 +1891,7 @@ bool cVNSIClient::processTIMER_Delete(cRequestPacket &req) /* OPCODE 84 */
           if (force)
           {
             timer->Skip();
-            cRecordControls::Process(Timers, time(NULL));
+            cRecordControls::Process(Timers, time(nullptr));
           }
           else
           {
@@ -1929,7 +1930,7 @@ bool cVNSIClient::processTIMER_Delete(cRequestPacket &req) /* OPCODE 84 */
           if (force)
           {
             timer->Skip();
-            cRecordControls::Process(time(NULL));
+            cRecordControls::Process(time(nullptr));
           }
           else
           {
@@ -2052,7 +2053,7 @@ bool cVNSIClient::processTIMER_Update(cRequestPacket &req) /* OPCODE 85 */
 
     cString buffer;
     const cChannel* channel = FindChannelByUID(channelid);
-    if(channel != NULL)
+    if(channel != nullptr)
     {
       buffer = cString::sprintf("%u:%s:%s:%04d:%04d:%d:%d:%s:%s\n", flags, (const char*)channel->GetChannelID().ToString(), *cTimer::PrintDay(day, weekdays, true), start, stop, priority, lifetime, file, aux);
     }
@@ -2220,7 +2221,7 @@ bool cVNSIClient::processRECORDINGS_GetList(cRequestPacket &req) /* OPCODE 102 *
     char* recname = strrchr(fullname, FOLDERDELIMCHAR);
     char* directory = nullptr;
 
-    if(recname == NULL)
+    if(recname == nullptr)
     {
       recname = fullname;
     }
@@ -2247,7 +2248,7 @@ bool cVNSIClient::processRECORDINGS_GetList(cRequestPacket &req) /* OPCODE 102 *
       resp.add_String("");
 
     // directory
-    if(directory != NULL)
+    if(directory != nullptr)
     {
       char* p = directory;
       while(*p != 0)
@@ -2276,7 +2277,7 @@ bool cVNSIClient::processRECORDINGS_GetList(cRequestPacket &req) /* OPCODE 102 *
         *pch = 0;
         char* foldername = filename;
         struct dirent **fileListTemp;
-        int noOfEntries = scandir(foldername, &fileListTemp, NULL, alphasort);
+        int noOfEntries = scandir(foldername, &fileListTemp, nullptr, alphasort);
         for (int i=0; i<noOfEntries; i++)
         {
           std::string name(fileListTemp[i]->d_name);
@@ -2321,7 +2322,7 @@ bool cVNSIClient::processRECORDINGS_Rename(cRequestPacket &req) /* OPCODE 103 */
 
   const cRecording* recording = cRecordingsCache::GetInstance().Lookup(uid);
 
-  if(recording != NULL) {
+  if(recording != nullptr) {
     // get filename and remove last part (recording time)
     std::string filename_old(recording->FileName());
     std::string::size_type i = filename_old.rfind('/');
@@ -2359,7 +2360,7 @@ bool cVNSIClient::processRECORDINGS_Rename(cRequestPacket &req) /* OPCODE 103 */
 bool cVNSIClient::processRECORDINGS_Delete(cRequestPacket &req) /* OPCODE 104 */
 {
   cString recName;
-  cRecording* recording = NULL;
+  cRecording* recording = nullptr;
 
   uint32_t uid = req.extract_U32();
   recording = cRecordingsCache::GetInstance().LookupWrite(uid);
@@ -2413,7 +2414,7 @@ bool cVNSIClient::processRECORDINGS_Delete(cRequestPacket &req) /* OPCODE 104 */
 bool cVNSIClient::processRECORDINGS_GetEdl(cRequestPacket &req) /* OPCODE 105 */
 {
   cString recName;
-  const cRecording* recording = NULL;
+  const cRecording* recording = nullptr;
 
   uint32_t uid = req.extract_U32();
   recording = cRecordingsCache::GetInstance().Lookup(uid);
@@ -2428,11 +2429,11 @@ bool cVNSIClient::processRECORDINGS_GetEdl(cRequestPacket &req) /* OPCODE 105 */
     {
 #if VDRVERSNUM >= 10732
       double fps = recording->FramesPerSecond();
-      cMark* mark = NULL;
+      cMark* mark = nullptr;
 
       if (EdlMode == 0)         /* scene */
       {
-        while((mark = marks.GetNextBegin(mark)) != NULL)
+        while((mark = marks.GetNextBegin(mark)) != nullptr)
         {
           resp.add_U64(mark->Position() *1000 / fps);
           resp.add_U64(mark->Position() *1000 / fps);
@@ -2443,9 +2444,9 @@ bool cVNSIClient::processRECORDINGS_GetEdl(cRequestPacket &req) /* OPCODE 105 */
       {
         int kodiMode = EdlMode==1 ? 3 : 0; /* comskip : cut */
         int endPos = 0;
-        cMark* endMark = NULL;
+        cMark* endMark = nullptr;
 
-        while ((mark = marks.GetNextBegin(endMark)) != NULL)
+        while ((mark = marks.GetNextBegin(endMark)) != nullptr)
         {
           if (endPos != mark->Position())
           {
@@ -2453,7 +2454,7 @@ bool cVNSIClient::processRECORDINGS_GetEdl(cRequestPacket &req) /* OPCODE 105 */
             resp.add_U64(mark->Position() *1000 / fps);
             resp.add_S32(kodiMode);
           }
-          if ((endMark = marks.GetNextEnd(mark)) == NULL)
+          if ((endMark = marks.GetNextEnd(mark)) == nullptr)
             break;
           endPos = endMark->Position();
         }
@@ -2493,10 +2494,10 @@ bool cVNSIClient::processEPG_GetForChannel(cRequestPacket &req) /* OPCODE 120 */
   Channels.Lock(false);
 #endif
 
-  const cChannel* channel = NULL;
+  const cChannel* channel = nullptr;
 
   channel = FindChannelByUID(channelUID);
-  if(channel != NULL)
+  if(channel != nullptr)
   {
     DEBUGLOG("get schedule called for channel '%s'", (const char*)channel->GetChannelID().ToString());
   }
@@ -2513,7 +2514,7 @@ bool cVNSIClient::processEPG_GetForChannel(cRequestPacket &req) /* OPCODE 120 */
     Channels.Unlock();
 #endif
 
-    ERRORLOG("written 0 because channel = NULL");
+    ERRORLOG("written 0 because channel = nullptr");
     return true;
   }
 
@@ -2527,7 +2528,7 @@ bool cVNSIClient::processEPG_GetForChannel(cRequestPacket &req) /* OPCODE 120 */
     m_socket.write(resp.getPtr(), resp.getLen());
     Channels.Unlock();
 
-    DEBUGLOG("written 0 because Schedule!s! = NULL");
+    DEBUGLOG("written 0 because Schedule!s! = nullptr");
     return true;
   }
 #endif
@@ -2546,7 +2547,7 @@ bool cVNSIClient::processEPG_GetForChannel(cRequestPacket &req) /* OPCODE 120 */
     Channels.Unlock();
 #endif
 
-    DEBUGLOG("written 0 because Schedule = NULL");
+    DEBUGLOG("written 0 because Schedule = nullptr");
     return true;
   }
 
@@ -2581,7 +2582,7 @@ bool cVNSIClient::processEPG_GetForChannel(cRequestPacket &req) /* OPCODE 120 */
 #endif
 
     //in the past filter
-    if ((thisEventTime + thisEventDuration) < (uint32_t)time(NULL))
+    if ((thisEventTime + thisEventDuration) < (uint32_t)time(nullptr))
       continue;
 
     //start time filter
@@ -2860,8 +2861,7 @@ void cVNSIClient::processSCAN_SetStatus(int status)
 
 bool cVNSIClient::processOSD_Connect(cRequestPacket &req) /* OPCODE 160 */
 {
-  delete m_Osd;
-  m_Osd = new cVnsiOsdProvider(&m_socket);
+  m_Osd.reset( new cVnsiOsdProvider(&m_socket) );
   int osdWidth, osdHeight;
   double aspect;
   cDevice::PrimaryDevice()->GetOsdSize(osdWidth, osdHeight, aspect);
@@ -2877,8 +2877,7 @@ bool cVNSIClient::processOSD_Connect(cRequestPacket &req) /* OPCODE 160 */
 
 bool cVNSIClient::processOSD_Disconnect() /* OPCODE 161 */
 {
-  delete m_Osd;
-  m_Osd = NULL;
+  m_Osd.reset();
   return true;
 }
 
@@ -2937,7 +2936,7 @@ bool cVNSIClient::processRECORDINGS_DELETED_GetList(cRequestPacket &req) /* OPCO
 #if APIVERSNUM >= 10705
     const cEvent *event = recording->Info()->GetEvent();
 #else
-    const cEvent *event = NULL;
+    const cEvent *event = nullptr;
 #endif
 
     time_t recordingStart    = 0;
@@ -2979,9 +2978,9 @@ bool cVNSIClient::processRECORDINGS_DELETED_GetList(cRequestPacket &req) /* OPCO
 
     char* fullname = strdup(recording->Name());
     char* recname = strrchr(fullname, FOLDERDELIMCHAR);
-    char* directory = NULL;
+    char* directory = nullptr;
 
-    if(recname == NULL) {
+    if(recname == nullptr) {
       recname = fullname;
     }
     else {
@@ -3006,7 +3005,7 @@ bool cVNSIClient::processRECORDINGS_DELETED_GetList(cRequestPacket &req) /* OPCO
       resp.add_String("");
 
     // directory
-    if(directory != NULL) {
+    if(directory != nullptr) {
       char* p = directory;
       while(*p != 0) {
         if(*p == FOLDERDELIMCHAR) *p = '/';
@@ -3036,7 +3035,7 @@ bool cVNSIClient::processRECORDINGS_DELETED_Delete(cRequestPacket &req) /* OPCOD
   resp.init(req.getRequestID());
 
   cString recName;
-  cRecording* recording = NULL;
+  cRecording* recording = nullptr;
 
 #if VDRVERSNUM >= 20102
   cLockFile LockFile(cVideoDirectory::Name());

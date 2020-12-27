@@ -32,13 +32,15 @@
 
 #include <stdexcept>
 
+#include "ICommand.h"
+
 class MalformedVNSIPacket : public std::runtime_error {
 public:
   MalformedVNSIPacket()
     :std::runtime_error("Malformed VNSI packet") {}
 };
 
-class cRequestPacket
+class cRequestPacket : public ICommand
 {
 public:
   cRequestPacket(uint32_t requestID, uint32_t opcode, uint8_t* data, size_t dataLength);
@@ -64,7 +66,18 @@ public:
   // If you call this, the memory becomes yours. Free with free()
   //uint8_t* getData();
 
+  /****************************************************************************
+   * ICommand overrides
+   ***************************************************************************/
+  virtual void
+  execute( ICommandVisitor& processor );
+
 private:
+  cRequestPacket( const cRequestPacket& other ) = delete;
+
+  cRequestPacket&
+  operator=( const cRequestPacket& other ) = delete;
+
   uint8_t* userData;
   size_t userDataLength;
   size_t packetPos;

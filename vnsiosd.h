@@ -24,19 +24,22 @@
 
 #include <vdr/osd.h>
 
-class cxSocket;
+class ISocket;
 
 class cVnsiOsdProvider : public cOsdProvider
 {
 public:
-  cVnsiOsdProvider(cxSocket *socket);
+  cVnsiOsdProvider(ISocket *socket);
   virtual ~cVnsiOsdProvider();
+
   virtual cOsd *CreateOsd(int Left, int Top, uint Level);
+
   static void SendOsdPacket(int cmd, int wnd, int color = 0, int x0 = 0, int y0 = 0, int x1 = 0, int y1 = 0, const void *data = NULL, int size = 0);
   static bool IsRequestFull();
   static void SendKey(unsigned int key);
+
 private:
-  static cxSocket *m_Socket;
+  static ISocket *m_Socket;
   static cMutex m_Mutex;
   static bool m_RequestFull;
 };

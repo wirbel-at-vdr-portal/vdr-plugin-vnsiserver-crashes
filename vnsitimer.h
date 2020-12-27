@@ -54,21 +54,22 @@ class CVNSITimers : public cThread
 {
 public:
   CVNSITimers();
-  void Load();
-  void Save();
-  void Shutdown();
+
+  static constexpr uint32_t VNSITIMER_MASK = 0xF0000000;
   void Add(CVNSITimer &&timer);
-  void Scan();
   size_t GetTimersCount();
-  bool StateChange(int &state);
   std::vector<CVNSITimer> GetTimers();
-  bool GetTimer(int id, CVNSITimer &timer);
   bool UpdateTimer(int id, CVNSITimer &timer);
   bool DeleteTimer(int id);
   int GetParent(const cTimer *timer);
+  bool GetTimer(int id, CVNSITimer &timer);
+  void Load();
+  void Shutdown();
+  void Scan();
+  bool StateChange(int &state);
 
-  static constexpr uint32_t VNSITIMER_MASK = 0xF0000000;
-protected:
+private:
+  void Save();
   virtual void Action(void) override;
   std::string Convert(std::string search);
   bool IsDuplicateEvent(cTimers *timers, const cEvent *event);

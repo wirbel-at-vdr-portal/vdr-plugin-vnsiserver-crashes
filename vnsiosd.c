@@ -22,6 +22,8 @@
  *
  */
 
+#include <mutex>
+
 #include "vnsiosd.h"
 #include "config.h"
 #include "vnsicommand.h"
@@ -32,7 +34,7 @@
 #include <unistd.h>
 #include <vdr/tools.h>
 #include <vdr/remote.h>
-#include "cxsocket.h"
+#include "ISocket.h"
 
 #define ACTION_NONE                    0
 #define ACTION_MOVE_LEFT               1
@@ -210,11 +212,11 @@ void cVnsiOsd::Flush(void)
 
 // --- cVnsiOsdProvider -------------------------------------------------------
 
-cxSocket *cVnsiOsdProvider::m_Socket;
+ISocket *cVnsiOsdProvider::m_Socket;
 cMutex cVnsiOsdProvider::m_Mutex;
 bool cVnsiOsdProvider::m_RequestFull;
 
-cVnsiOsdProvider::cVnsiOsdProvider(cxSocket *socket)
+cVnsiOsdProvider::cVnsiOsdProvider(ISocket *socket)
 {
   cMutexLock lock(&m_Mutex);
   INFOLOG("new osd provider");
@@ -249,11 +251,10 @@ void cVnsiOsdProvider::SendOsdPacket(int cmd, int wnd, int color, int x0, int y0
   m_OsdPacket.setLen(m_OsdPacket.getOSDHeaderLength() + size);
   m_OsdPacket.finaliseOSD();
 
-  m_Socket->LockWrite();
+  std::unique_lock<ISocket> socketLock(*m_Socket);
   m_Socket->write(m_OsdPacket.getPtr(), m_OsdPacket.getOSDHeaderLength(), -1, (size > 0) ? true: false);
   if (size)
     m_Socket->write(data, size);
-  m_Socket->UnlockWrite();
 }
 
 bool cVnsiOsdProvider::IsRequestFull()

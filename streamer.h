@@ -36,6 +36,7 @@
 
 #include <memory>
 
+class ISocket;
 class cxSocket;
 class cChannel;
 class cTSParser;
@@ -58,7 +59,7 @@ public:
 
   void Activate(bool On);
 
-  bool StreamChannel(const cChannel *channel, int priority, cxSocket *Socket, cResponsePacket* resp);
+  bool StreamChannel(const cChannel *channel, int priority, ISocket *Socket, cResponsePacket* resp);
   bool IsStarting() { return m_startup; }
   bool IsAudioOnly() { return m_IsAudioOnly; }
   bool IsMPEGPS() { return m_IsMPEGPS; }
@@ -83,7 +84,7 @@ protected:
   const int m_ClientID;
   const cChannel *m_Channel = nullptr;
   cDevice *m_Device;
-  cxSocket *m_Socket = nullptr;             /*!> The socket class to communicate with client */
+  ISocket *m_Socket = nullptr;             /*!> The socket class to communicate with client */
   std::unique_ptr<cxSocket> m_statusSocket;
   int m_Frontend = -1;                      /*!> File descriptor to access used receiving device  */
   dvb_frontend_info m_FrontendInfo;         /*!> DVB Information about the receiving device (DVB only) */
@@ -96,7 +97,6 @@ protected:
   cTimeMs m_last_tick;
   bool m_SignalLost = false;
   bool m_IFrameSeen = false;
-  cResponsePacket m_streamHeader;
   cVNSIDemuxer m_Demuxer;
   cVideoBuffer *m_VideoBuffer = nullptr;
   cVideoInput m_VideoInput;
@@ -107,5 +107,6 @@ protected:
   int64_t m_refDTS;
   int64_t m_curDTS = 0;
   int m_protocolVersion = 0;
+  cTimeMs mNoDataTimeout;
 };
 

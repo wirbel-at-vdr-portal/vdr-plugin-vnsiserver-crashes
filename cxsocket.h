@@ -36,7 +36,9 @@
 #include <vdr/thread.h>
 #include <vdr/tools.h>
 
-class cxSocket
+#include "ISocket.h"
+
+class cxSocket : public ISocket
 {
   int m_fd;
   cMutex m_MutexWrite;
@@ -50,13 +52,17 @@ class cxSocket
   cxSocket(const cxSocket &) = delete;
   cxSocket &operator=(const cxSocket &) = delete;
 
-  void Shutdown(void);
-  void LockWrite();
-  void UnlockWrite();
-  int GetHandle();
-  void Invalidate();
-  ssize_t read(void *buffer, size_t size, int timeout_ms = -1);
-  ssize_t write(const void *buffer, size_t size, int timeout_ms = -1, bool more_data = false);
   static char *ip2txt(uint32_t ip, unsigned int port, char *str);
+
+  /****************************************************************************
+   * ISocket virtual overrides
+   ***************************************************************************/
+  void Shutdown() override;
+  void lock() override;
+  void unlock() override;
+  void Invalidate() override;
+  int GetHandle() const override;
+  ssize_t read(void *buffer, size_t size, int timeout_ms = -1) override;
+  ssize_t write(const void *buffer, size_t size, int timeout_ms = -1, bool more_data = false) override;
 };
 

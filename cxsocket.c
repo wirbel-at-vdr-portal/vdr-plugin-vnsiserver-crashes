@@ -70,17 +70,17 @@ void cxSocket::Shutdown()
     ::shutdown(m_fd, SHUT_RD);
 }
 
-void cxSocket::LockWrite()
+void cxSocket::lock()
 {
   m_MutexWrite.Lock();
 }
 
-void cxSocket::UnlockWrite()
+void cxSocket::unlock()
 {
   m_MutexWrite.Unlock();
 }
 
-int cxSocket::GetHandle()
+int cxSocket::GetHandle() const
 {
   return m_fd;
 }

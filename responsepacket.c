@@ -35,6 +35,7 @@
 #include <arpa/inet.h>
 #include <stdlib.h>
 #include <string.h>
+#include <stdexcept>
 
 #ifndef __FreeBSD__
 #include <asm/byteorder.h>
@@ -53,28 +54,21 @@
 */
 
 cResponsePacket::cResponsePacket()
+	: bufSize( 512 )
+	, buffer( static_cast<uint8_t*>(malloc(bufSize)) )
+	, bufUsed( 0 )
 {
-  buffer = NULL;
-  bufSize = 0;
-  bufUsed = 0;
 }
 
 cResponsePacket::~cResponsePacket()
 {
-  if (buffer) free(buffer);
-}
-
-void cResponsePacket::initBuffers()
-{
-  if (buffer == NULL) {
-    bufSize = 512;
-    buffer = (uint8_t*)malloc(bufSize);
-  }
+	free(buffer);
+	buffer = nullptr;
 }
 
 void cResponsePacket::init(uint32_t requestID)
 {
-  initBuffers();
+  bufUsed = 0;
 
   uint32_t ul;
 
@@ -90,8 +84,7 @@ void cResponsePacket::init(uint32_t requestID)
 
 void cResponsePacket::initScan(uint32_t opCode)
 {
-  initBuffers();
-
+  bufUsed = 0;
   uint32_t ul;
 
   ul = htonl(VNSI_CHANNEL_SCAN);                     // RR channel
@@ -106,8 +99,7 @@ void cResponsePacket::initScan(uint32_t opCode)
 
 void cResponsePacket::initStatus(uint32_t opCode)
 {
-  initBuffers();
-
+  bufUsed = 0;
   uint32_t ul;
 
   ul = htonl(VNSI_CHANNEL_STATUS);                     // RR channel
@@ -122,8 +114,7 @@ void cResponsePacket::initStatus(uint32_t opCode)
 
 void cResponsePacket::initStream(uint32_t opCode, uint32_t streamID, uint32_t duration, int64_t pts, int64_t dts, uint32_t serial)
 {
-  initBuffers();
-
+  bufUsed = 0;
   uint32_t ul;
   uint64_t ull;
 
@@ -149,8 +140,7 @@ void cResponsePacket::initStream(uint32_t opCode, uint32_t streamID, uint32_t du
 
 void cResponsePacket::initOsd(uint32_t opCode, int32_t wnd, int32_t color, int32_t x0, int32_t y0, int32_t x1, int32_t y1)
 {
-  initBuffers();
-
+  bufUsed = 0;
   uint32_t ul;
   int32_t l;
 
@@ -194,16 +184,16 @@ void cResponsePacket::finaliseOSD()
   memcpy(&buffer[userDataLenPosOSD], &ul, sizeof(uint32_t));
 }
 
-bool cResponsePacket::copyin(const uint8_t* src, uint32_t len)
+void cResponsePacket::copyin(const uint8_t* src, uint32_t len)
 {
-  if (!checkExtend(len)) return false;
+  checkExtend(len);
+
   memcpy(buffer + bufUsed, src, len);
   bufUsed += len;
-  return true;
 }
 
 uint8_t* cResponsePacket::reserve(uint32_t len) {
-  if (!checkExtend(len)) return 0;
+  checkExtend(len);
   uint8_t* result = buffer + bufUsed;
   bufUsed += len;
   return result;
@@ -215,69 +205,68 @@ bool cResponsePacket::unreserve(uint32_t len) {
   return true;
 }
 
-bool cResponsePacket::add_String(const char* string)
+void cResponsePacket::add_String(const char* string)
 {
   uint32_t len = strlen(string) + 1;
-  if (!checkExtend(len)) return false;
+  checkExtend(len);
   memcpy(buffer + bufUsed, string, len);
   bufUsed += len;
-  return true;
 }
 
-bool cResponsePacket::add_U32(uint32_t ul)
+void cResponsePacket::add_U32(uint32_t ul)
 {
-  if (!checkExtend(sizeof(uint32_t))) return false;
+  checkExtend(sizeof(uint32_t));
   uint32_t tmp = htonl(ul);
   memcpy(&buffer[bufUsed], &tmp, sizeof(uint32_t));
   bufUsed += sizeof(uint32_t);
-  return true;
 }
 
-bool cResponsePacket::add_U8(uint8_t c)
+void cResponsePacket::add_U8(uint8_t c)
 {
-  if (!checkExtend(sizeof(uint8_t))) return false;
+  checkExtend(sizeof(uint8_t));
   buffer[bufUsed] = c;
   bufUsed += sizeof(uint8_t);
-  return true;
 }
 
-bool cResponsePacket::add_S32(int32_t l)
+void cResponsePacket::add_S32(int32_t l)
 {
-  if (!checkExtend(sizeof(int32_t))) return false;
+  checkExtend(sizeof(int32_t));
   int32_t tmp = htonl(l);
   memcpy(&buffer[bufUsed], &tmp, sizeof(int32_t));
   bufUsed += sizeof(int32_t);
-  return true;
 }
 
-bool cResponsePacket::add_U64(uint64_t ull)
+void cResponsePacket::add_U64(uint64_t ull)
 {
-  if (!checkExtend(sizeof(uint64_t))) return false;
+  checkExtend(sizeof(uint64_t));
   uint64_t tmp = __cpu_to_be64(ull);
   memcpy(&buffer[bufUsed], &tmp, sizeof(uint64_t));
   bufUsed += sizeof(uint64_t);
-  return true;
 }
 
-bool cResponsePacket::add_double(double d)
+void cResponsePacket::add_double(double d)
 {
-  if (!checkExtend(sizeof(double))) return false;
+  checkExtend(sizeof(double));
   uint64_t ull;
   memcpy(&ull, &d, sizeof(double));
   ull = __cpu_to_be64(ull);
   memcpy(&buffer[bufUsed], &ull, sizeof(uint64_t));
   bufUsed += sizeof(uint64_t);
-  return true;
 }
 
 
-bool cResponsePacket::checkExtend(uint32_t by)
+void cResponsePacket::checkExtend(uint32_t by)
 {
-  if ((bufUsed + by) < bufSize) return true;
-  if (512 > by) by = 512;
+  if ((bufUsed + by) < bufSize)
+  {
+	  return;
+  }
+
   uint8_t* newBuf = (uint8_t*)realloc(buffer, bufSize + by);
-  if (!newBuf) return false;
+  if (!newBuf)
+  {
+	  throw std::bad_alloc();
+  }
   buffer = newBuf;
   bufSize += by;
-  return true;
 }

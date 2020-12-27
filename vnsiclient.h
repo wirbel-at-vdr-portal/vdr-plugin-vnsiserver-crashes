@@ -31,12 +31,17 @@
 #include <vdr/status.h>
 
 #include "config.h"
-#include "cxsocket.h"
 #include "channelscancontrol.h"
+#include "vnsisocket.h"
+#include "ICommandQueue.h"
+#include "ICommandVisitor.h"
 
-#include <atomic>
 #include <map>
 #include <string>
+#include <mutex>
+#include <list>
+#include <condition_variable>
+#include <memory>
 
 #define VNSI_EPG_AGAIN 1
 #define VNSI_EPG_PAUSE 2
@@ -53,35 +58,87 @@ class CVNSITimers;
 
 class cVNSIClient : public cThread
                   , public cStatus
+				  , public ICommandQueue
+				  , public ICommandVisitor
 {
 
 public:
-
   cVNSIClient(int fd, unsigned int id, const char *ClientAdr, CVNSITimers &timers);
   virtual ~cVNSIClient();
 
   cVNSIClient(const cVNSIClient &) = delete;
   cVNSIClient &operator=(const cVNSIClient &) = delete;
 
-  void ChannelsChange();
-  void RecordingsChange();
-  void SignalTimerChange();
-  int EpgChange();
   unsigned int GetID() { return m_Id; }
 
   static bool InhibidDataUpdates() { return m_inhibidDataUpdates; }
 
-protected:
+  void ChannelsChange();
+  void RecordingsChange();
+  void SignalTimerChange();
+  void EpgChange();
 
-  void Action(void) override;
-  void Recording(const cDevice *Device, const char *Name, const char *FileName, bool On) override;
-  void OsdStatusMessage(const char *Message) override;
+  /****************************************************************************
+   * ICommandQueue virtual overrides
+   ***************************************************************************/
+  virtual void
+  enqueue( const ICommandSharedPtr& command ) override;
+
+  /****************************************************************************
+   * ICommandQueue virtual overrides
+   ***************************************************************************/
+  virtual void
+  visit( cRequestPacket& command ) override;
+
+  virtual void
+  visit( SocketError& command ) override;
+
+  virtual void
+  visit( StatusRecording& command ) override;
+
+  virtual void
+  visit( StatusOsdStatusMessage& command ) override;
+
+  virtual void
+  visit( StatusChannelChange& command ) override;
+
+  virtual void
+  visit( StatusChannelsChange& command ) override;
+
+  virtual void
+  visit( StatusRecordingsChange& command ) override;
+
+  virtual void
+  visit( StatusSignalTimerChange& command ) override;
+
+  virtual void
+  visit( StatusEpgChange& command ) override;
+
+private:
+  /****************************************************************************
+   * cThread virtual overrides
+   ***************************************************************************/
+  void
+  Action() override;
+
+  /****************************************************************************
+   * cStatus virtual overrides
+   ***************************************************************************/
+  void
+  Recording( const cDevice* Device,
+		     const char* Name,
+			 const char* FileName,
+			 bool On ) override;
+
+  void
+  OsdStatusMessage( const char* Message ) override;
+
 #if VDRVERSNUM >= 20104
-  void ChannelChange(const cChannel *Channel) override;
+  void
+  ChannelChange( const cChannel* Channel ) override;
 #endif
 
-  void SetLoggedIn(bool yesNo) { m_loggedIn = yesNo; }
-  void SetStatusInterface(bool yesNo) { m_StatusInterfaceEnabled = yesNo; }
+  /***************************************************************************/
   bool StartChannelStreaming(cResponsePacket &resp, const cChannel *channel, int32_t priority, uint8_t timeshift, uint32_t timeout);
   void StopChannelStreaming();
 
@@ -174,38 +231,41 @@ protected:
   void processSCAN_IsFinished();
   void processSCAN_SetStatus(int status);
 
-  typedef struct
+  struct ChannelGroup
   {
     bool automatic;
     bool radio;
     std::string name;
-  } ChannelGroup;
+  };
 
   std::map<std::string, ChannelGroup> m_channelgroups[2];
 
-  const unsigned int m_Id;
-  cxSocket m_socket;
-  bool m_loggedIn = false;
-  std::atomic_bool m_StatusInterfaceEnabled;
-  cLiveStreamer *m_Streamer = nullptr;
-  bool m_isStreaming = false;
-  bool m_bSupportRDS = false;
-  const cString m_ClientAddress;
-  cRecPlayer *m_RecPlayer = nullptr;
-  cCharSetConv m_toUTF8;
-  uint32_t m_protocolVersion;
-  cMutex m_msgLock;
-  static cMutex m_timerLock;
-  cVnsiOsdProvider *m_Osd = nullptr;
-  CScanControl m_ChannelScanControl;
-  static bool m_inhibidDataUpdates;
+  const unsigned int 	m_Id;
+  bool 					m_loggedIn = false;
+  bool 					m_StatusInterfaceEnabled;
+  std::unique_ptr<cLiveStreamer>		m_Streamer;
+  bool 					m_isStreaming = false;
+  bool 					m_bSupportRDS = false;
+  const cString 		m_ClientAddress;
+  std::unique_ptr<cRecPlayer>m_RecPlayer;
+  cCharSetConv 			m_toUTF8;
+  uint32_t 				m_protocolVersion;
+  static cMutex 		m_timerLock;
+  std::unique_ptr<cVnsiOsdProvider>		m_Osd;
+  CScanControl 			m_ChannelScanControl;
+  static bool 			m_inhibidDataUpdates;
 
-  typedef struct
+  struct sEpgUpdate
   {
     int attempts = 0;
     time_t lastEvent = 0;
     time_t lastTrigger = 0;
-  } sEpgUpdate;
-  std::map<int, sEpgUpdate> m_epgUpdate;
-  CVNSITimers &m_vnsiTimers;
+  };
+  std::map<int, sEpgUpdate> 	m_epgUpdate;
+  CVNSITimers&					m_vnsiTimers;
+
+  std::mutex 					m_QueueMutex;
+  std::condition_variable		m_QueueCondVar;
+  std::list<ICommandSharedPtr> 	m_Queue;
+  VNSISocket 					m_socket;
 };

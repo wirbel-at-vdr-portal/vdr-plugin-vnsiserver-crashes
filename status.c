@@ -36,6 +36,137 @@
 #include <errno.h>
 #include <string.h>
 
+#include <algorithm>
+#include <thread>
+
+namespace {
+
+class ChannelsState
+{
+public:
+	ChannelsState()
+		: mChannels( cChannels::GetChannelsRead(mChanState) )
+	{
+		mChanState.Remove(false);
+	}
+
+	bool
+	isModified()
+	{
+		bool modified = mChannels->Lock(mChanState);
+		if ( modified )
+		{
+			mChanState.Remove(false);
+		}
+		return modified;
+	}
+
+private:
+	cStateKey 			mChanState;
+	const cChannels*	mChannels;
+};
+
+class RecordingsState
+{
+public:
+	RecordingsState()
+		: mRecordings( cRecordings::GetRecordingsRead(mRecState) )
+	{
+		mRecState.Remove(false);
+	}
+
+	bool
+	isModified()
+	{
+		bool modified = mRecordings->Lock(mRecState);
+		if ( modified )
+		{
+			mRecState.Remove(false);
+		}
+		return modified;
+	}
+private:
+	cStateKey 			mRecState;
+	const cRecordings*	mRecordings;
+};
+
+class TimersState
+{
+public:
+	TimersState()
+		: mTimers(cTimers::GetTimersRead(mState))
+	{
+		mState.Remove(false);
+	}
+
+	bool
+	isModified()
+	{
+		bool modified = mTimers->Lock(mState);
+		if ( modified )
+		{
+			mState.Remove(false);
+		}
+		return modified;
+	}
+private:
+	cStateKey 		mState;
+	const cTimers* 	mTimers;
+};
+
+class VNSITimersState
+{
+public:
+	VNSITimersState( CVNSITimers& timers )
+		: mTimers( timers )
+		, mState( -1 )
+	{
+		mTimers.StateChange( mState );
+	}
+
+	bool
+	isModified()
+	{
+		return mTimers.StateChange( mState );
+	}
+
+private:
+	CVNSITimers& 	mTimers;
+	int 			mState;
+};
+
+class EPGState
+{
+public:
+	EPGState()
+		: mEpg( cSchedules::GetSchedulesRead(mState) )
+	{
+		mState.Remove(false);
+	}
+
+	bool
+	isModified()
+	{
+		bool modified = mEpg->Lock(mState);
+		if ( modified )
+		{
+			mState.Remove(false);
+		}
+		return modified;
+	}
+
+	void
+	reset()
+	{
+		mState.Reset();
+	}
+private:
+	cStateKey 			mState;
+	const cSchedules*	mEpg;
+};
+
+} // end namespace
+
 cVNSIStatus::cVNSIStatus() : cThread("VNSIStatus")
 {
 }
@@ -53,9 +184,11 @@ void cVNSIStatus::Init(CVNSITimers *timers)
 
 void cVNSIStatus::Shutdown()
 {
-  Cancel(5);
-  cMutexLock lock(&m_mutex);
-  m_clients.clear();
+	// Stop the thread
+	Cancel(5);
+
+	// No need to lock. The thread is already stopped
+	m_clients.clear();
 }
 
 static bool CheckFileSuffix(const char *name,
@@ -96,233 +229,147 @@ static void DeleteFiles(const char *directory_path, const char *suffix)
 
 void cVNSIStatus::AddClient(int fd, unsigned int id, const char *ClientAdr, CVNSITimers &timers)
 {
-  cMutexLock lock(&m_mutex);
-  std::shared_ptr<cVNSIClient> client = std::make_shared<cVNSIClient>(fd, id, ClientAdr, timers);
-  m_clients.push_back(client);
+	std::unique_lock<std::mutex> lock( m_mutex );
+	m_clients.push_back(std::make_shared<cVNSIClient>(fd, id, ClientAdr, timers));
 }
 
 void cVNSIStatus::Action(void)
 {
-  cTimeMs chanTimer(0);
-  cTimeMs epgTimer(0);
-  cTimeMs recTimer(0);
-  int recCnt = 0;
+	cTimeMs 			chanTimer;
+	cTimeMs 			epgTimer;
+	cTimeMs 			recTimer;
 
-  // get initial state of the recordings
-#if VDRVERSNUM >= 20301
-  cStateKey chanState;
-  const cChannels *channels = cChannels::GetChannelsRead(chanState);
-  chanState.Remove(false);
-#endif
+	ChannelsState 		channelState;
+	RecordingsState 	recordingState;
+	TimersState 		timersState;
+	VNSITimersState 	vnsiTimersState(*m_vnsiTimers);
+	EPGState 			epgState;
 
-  // get initial state of the recordings
-#if VDRVERSNUM >= 20301
-  cStateKey recState;
-  const cRecordings *recordings = cRecordings::GetRecordingsRead(recState);
-  recState.Remove(false);
-#else
-  int recState = -1;
-  Recordings.StateChanged(recState);
-#endif
-
-  // get initial state of the timers
-#if VDRVERSNUM >= 20301
-  cStateKey timerState;
-  const cTimers *timers = cTimers::GetTimersRead(timerState);
-  timerState.Remove(false);
-#else
-  int timerState = -1;
-  Timers.Modified(timerState);
-#endif
-
-  // vnsitimer
-  int vnsitimerState = -1;
-  m_vnsiTimers->StateChange(vnsitimerState);
-
-  // last update of epg
-#if VDRVERSNUM >= 20301
-  cStateKey epgState;
-  const cSchedules *epg = cSchedules::GetSchedulesRead(epgState);
-  epgState.Remove(false);
-#else
-  time_t epgUpdate = cSchedules::Modified();
-#endif
-
-  // delete old timeshift file
-  struct stat sb;
-  if ((*TimeshiftBufferDir) && stat(TimeshiftBufferDir, &sb) == 0 && S_ISDIR(sb.st_mode))
-  {
-    DeleteFiles(TimeshiftBufferDir, ".vnsi");
-  }
-  else
-  {
+	// delete old timeshift file
+	struct stat sb;
+	if ((*TimeshiftBufferDir) && stat(TimeshiftBufferDir, &sb) == 0 && S_ISDIR(sb.st_mode))
+	{
+		DeleteFiles(TimeshiftBufferDir, ".vnsi");
+	}
+	else
+	{
 #if VDRVERSNUM >= 20102
-    DeleteFiles(cVideoDirectory::Name(), ".vnsi");
+		DeleteFiles(cVideoDirectory::Name(), ".vnsi");
 #else
-    DeleteFiles(VideoDirectory, ".vnsi");
+		DeleteFiles(VideoDirectory, ".vnsi");
 #endif
-  }
+	}
 
-  // set thread priority
-  SetPriority(1);
+	// set thread priority
+	SetPriority(1);
 
-  while (Running())
-  {
-    m_mutex.Lock();
+	while (Running())
+	{
+		std::unique_lock<std::mutex> lock( m_mutex );
 
-    // remove disconnected clients
-    for (auto i = m_clients.begin(); i != m_clients.end();)
-    {
-      if (!(*i)->Active())
-      {
-        INFOLOG("removing client with ID %u from client list", (*i)->GetID());
-        i = m_clients.erase(i);
-      }
-      else
-      {
-        ++i;
-      }
-    }
+		// remove disconnected clients
+		std::list<cVNSIClientSharedPtr> connected;
+		std::copy_if( m_clients.begin(), m_clients.end(), std::back_inserter(connected),
+					  [](const cVNSIClientSharedPtr& client)
+					  {
+						  bool active = client->Active();
+						  if ( !active )
+						  {
+							  INFOLOG("removing client with ID %u from client list", client->GetID());
+						  }
+						  return active;
+					  });
+		std::swap( m_clients, connected );
+		lock.unlock();
 
-    // Don't to updates during running channel scan, KODI's PVR manager becomes
-    //restarted of finished scan.
-    if (!cVNSIClient::InhibidDataUpdates())
-    {
-      // reset inactivity timeout as long as there are clients connected
-      if (!m_clients.empty())
-      {
-        ShutdownHandler.SetUserInactiveTimeout();
-      }
+		// Don't to updates during running channel scan, KODI's PVR manager becomes
+		//restarted of finished scan.
+		if (!cVNSIClient::InhibidDataUpdates())
+		{
+			// reset inactivity timeout as long as there are clients connected
+			if (!m_clients.empty())
+			{
+				ShutdownHandler.SetUserInactiveTimeout();
+			}
 
-      // trigger clients to reload the modified channel list
-      if (chanTimer.TimedOut())
-      {
-#if VDRVERSNUM >= 20301
-        if (channels->Lock(chanState))
-        {
-          chanState.Remove(false);
-          INFOLOG("Requesting clients to reload channel list");
-          for (auto client : m_clients)
-            client->ChannelsChange();
-          chanTimer.Set(5000);
-        }
-#else
-        int modified = Channels.Modified();
-        if (modified)
-        {
-          Channels.SetModified((modified == CHANNELSMOD_USER) ? true : false);
-          INFOLOG("Requesting clients to reload channel list");
-          for (auto client : m_clients)
-            client->ChannelsChange();
-        }
-        chanTimer.Set(5000);
-#endif
-      }
+			// trigger clients to reload the modified channel list
+			if (chanTimer.TimedOut())
+			{
+				if ( channelState.isModified() )
+				{
+					INFOLOG("Requesting clients to reload channels list");
+					lock.lock();
+					std::for_each( m_clients.begin(), m_clients.end(),
+							       [](const cVNSIClientSharedPtr& client)
+								   {
+									   client->ChannelsChange();
+								   } );
+					lock.unlock();
+				}
+				chanTimer.Set(5000);
+			}
 
-#if VDRVERSNUM >= 20301
-      if (recordings->Lock(recState))
-      {
-        recState.Remove();
-        recTimer.Set(2500);
-        ++recCnt;
-      }
-      else if (recCnt && recTimer.TimedOut())
-      {
-        INFOLOG("Requesting clients to reload recordings list (%d)", recCnt);
-        recCnt = 0;
-        for (auto client : m_clients)
-        {
-          client->RecordingsChange();
-        }
-      }
+			// trigger clients to reload the modified recordings list
+			if (recTimer.TimedOut())
+			{
+				if ( recordingState.isModified() )
+				{
+					INFOLOG("Requesting clients to reload recordings list");
+					lock.lock();
+					std::for_each( m_clients.begin(), m_clients.end(),
+							       [](const cVNSIClientSharedPtr& client)
+								   {
+						 	 	       client->ChannelsChange();
+								   } );
+					lock.unlock();
+				}
+				recTimer.Set(2500);
+			}
 
-      if (timers->Lock(timerState))
-      {
-        timerState.Remove(false);
-        INFOLOG("Requesting clients to reload timers");
-        for (auto client : m_clients)
-        {
-          client->SignalTimerChange();
-        }
-      }
+			// trigger clients to reload the modified timers list
+			if ( timersState.isModified() )
+			{
+				INFOLOG("Requesting clients to reload timers");
+				lock.lock();
+				std::for_each( m_clients.begin(), m_clients.end(),
+						       [](const cVNSIClientSharedPtr& client)
+							   {
+							       client->SignalTimerChange();
+							   } );
+				lock.unlock();
+			}
 
-      if (m_vnsiTimers->StateChange(vnsitimerState))
-      {
-        INFOLOG("Requesting clients to reload vnsi-timers");
-        for (auto client : m_clients)
-        {
-          client->SignalTimerChange();
-        }
-      }
+			if ( vnsiTimersState.isModified() )
+			{
+				INFOLOG("Requesting clients to reload timers");
+				lock.lock();
+				std::for_each( m_clients.begin(), m_clients.end(),
+			   	               [](const cVNSIClientSharedPtr& client)
+			   				   {
+			  				       client->SignalTimerChange();
+			   				   } );
+				lock.unlock();
+			}
 
-      if (epgTimer.TimedOut())
-      {
-        if (epg->Lock(epgState))
-        {
-          epgState.Remove(false);
-          DEBUGLOG("Requesting clients to load epg");
-          int callAgain = 0;
-          for (auto client : m_clients)
-          {
-            callAgain |= client->EpgChange();
-          }
-          if (callAgain & VNSI_EPG_AGAIN)
-          {
-            epgTimer.Set(100);
-            epgState.Reset();
-          }
-          else
-          {
-            if (callAgain & VNSI_EPG_PAUSE)
-            {
-              epgState.Reset();
-            }
-            epgTimer.Set(5000);
-            m_vnsiTimers->Scan();
-          }
-        }
-      }
-#else
-      // update recordings
-      if (Recordings.StateChanged(recState))
-      {
-        INFOLOG("Recordings state changed (%i)", recState);
-        recTimer.Set(2500);
-        ++recCnt;
-      }
-      else if (recCnt && recTimer.TimedOut())
-      {
-        INFOLOG("Requesting clients to reload recordings list");
-        recCnt = 0;
-        for (auto client : m_clients)
-          client->RecordingsChange();
-      }
 
-      // update timers
-      if (Timers.Modified(timerState))
-      {
-        INFOLOG("Timers state changed (%i)", timerState);
-        INFOLOG("Requesting clients to reload timers");
-        for (auto client : m_clients)
-        {
-          client->SignalTimerChange();
-        }
-      }
+			if (epgTimer.TimedOut())
+			{
+				if ( epgState.isModified() )
+				{
+					INFOLOG("Requesting clients to reload timers");
+					lock.lock();
+					std::for_each( m_clients.begin(), m_clients.end(),
+					               [](const cVNSIClientSharedPtr& client)
+								   {
+					                   client->EpgChange();
+								   } );
+				    lock.unlock();
+				}
+				epgTimer.Set(5000);
+				m_vnsiTimers->Scan();
+			}
+		}
 
-      // update epg
-      if ((cSchedules::Modified() > epgUpdate + 10) || time(NULL) > epgUpdate + 300)
-      {
-        for (auto client : m_clients)
-        {
-          client->EpgChange();
-        }
-        epgUpdate = time(NULL);
-      }
-#endif
-    }
-
-    m_mutex.Unlock();
-
-    usleep(250*1000);
-  }
+		std::this_thread::sleep_for( std::chrono::milliseconds(250) );
+	}
 }

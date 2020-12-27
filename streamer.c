@@ -27,6 +27,8 @@
 #include <sys/ioctl.h>
 #include <time.h>
 
+#include <mutex>
+
 // work-around for VDR's tools.h
 #if VDRVERSNUM < 20400
 #define __STL_CONFIG_H 1
@@ -185,7 +187,7 @@ void cLiveStreamer::Close(void)
 
 void cLiveStreamer::Action(void)
 {
-  int ret;
+  int ret = 0;
   sStreamPacket pkt_data;
   sStreamPacket pkt_side_data; // Additional data
   memset(&pkt_data, 0, sizeof(sStreamPacket));
@@ -196,19 +198,25 @@ void cLiveStreamer::Action(void)
   cTimeMs bufferStatsTimer(1000);
   int openFailCount = 0;
 
+  mNoDataTimeout.Set(2500);
+
   while (Running())
   {
     cVideoInput::eReceivingStatus retune = cVideoInput::NORMAL;
     if (m_VideoInput.IsOpen())
       retune = m_VideoInput.ReceivingStatus();
     if (retune == cVideoInput::RETUNE)
+    {
+      ERRORLOG( "Fake ret -1 while retuning" ); 
       // allow timeshift playback when retune == cVideoInput::CLOSE
       ret = -1;
+    }
     else
       ret = m_Demuxer.Read(&pkt_data, &pkt_side_data);
 
     if (ret > 0)
     {
+      mNoDataTimeout.Set(2500);
       if (pkt_data.pmtChange)
       {
         requestStreamChangeData = true;
@@ -281,6 +289,14 @@ void cLiveStreamer::Action(void)
     }
     else if (ret == -1)
     {
+      //INFOLOG("cLiveStreamer: video input: -1: retune: %d", retune);
+      if ( mNoDataTimeout.TimedOut() && retune == cVideoInput::NORMAL)
+      {
+          ERRORLOG("No valid packet within timeout. Requesting re-tune");
+	  retune = cVideoInput::RETUNE;
+	  mNoDataTimeout.Set(60000);
+      }
+
       // no data
       if (retune == cVideoInput::CLOSE)
       {
@@ -324,6 +340,7 @@ void cLiveStreamer::Action(void)
     }
     else if (ret == -2)
     {
+      INFOLOG("cLiveStreamer: video input: -2");
       if (!Open(m_Demuxer.GetSerial()))
       {
         m_Socket->Shutdown();
@@ -334,7 +351,7 @@ void cLiveStreamer::Action(void)
   INFOLOG("exit streamer thread");
 }
 
-bool cLiveStreamer::StreamChannel(const cChannel *channel, int priority, cxSocket *Socket, cResponsePacket *resp)
+bool cLiveStreamer::StreamChannel(const cChannel *channel, int priority, ISocket *Socket, cResponsePacket *resp)
 {
   if (channel == NULL)
   {
@@ -385,14 +402,15 @@ void cLiveStreamer::sendStreamPacket(sStreamPacket *pkt)
   if (pkt->size == 0)
     return;
 
-  m_streamHeader.initStream(VNSI_STREAM_MUXPKT, pkt->id, pkt->duration, pkt->pts, pkt->dts, pkt->serial);
-  m_streamHeader.setLen(m_streamHeader.getStreamHeaderLength() + pkt->size);
-  m_streamHeader.finaliseStream();
+  cResponsePacket streamHeader;
+  streamHeader.initStream(VNSI_STREAM_MUXPKT, pkt->id, pkt->duration, pkt->pts, pkt->dts, pkt->serial);
+  streamHeader.setLen(streamHeader.getStreamHeaderLength() + pkt->size);
+  streamHeader.finaliseStream();
 
-  m_Socket->LockWrite();
-  m_Socket->write(m_streamHeader.getPtr(), m_streamHeader.getStreamHeaderLength(), -1, true);
+  std::unique_lock<ISocket> lock( *m_Socket );
+  m_Socket->write(streamHeader.getPtr(), streamHeader.getStreamHeaderLength(), -1, true);
   m_Socket->write(pkt->data, pkt->size);
-  m_Socket->UnlockWrite();
+  lock.unlock();
 
   m_last_tick.Set(0);
   m_SignalLost = false;

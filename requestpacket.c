@@ -27,6 +27,7 @@
 #include "requestpacket.h"
 #include "vnsicommand.h"
 #include "config.h"
+#include "ICommandVisitor.h"
 
 #include <stdlib.h>
 #include <string.h>
@@ -56,6 +57,12 @@ cRequestPacket::~cRequestPacket()
 bool cRequestPacket::end() const
 {
   return (packetPos >= userDataLength);
+}
+
+void
+cRequestPacket::execute( ICommandVisitor& visitor )
+{
+	visitor.visit( *this );
 }
 
 char* cRequestPacket::extract_String()

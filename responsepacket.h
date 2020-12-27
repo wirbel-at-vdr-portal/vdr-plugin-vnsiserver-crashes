@@ -47,16 +47,16 @@ public:
   void finalise();
   void finaliseStream();
   void finaliseOSD();
-  bool copyin(const uint8_t* src, uint32_t len);
+  void copyin(const uint8_t* src, uint32_t len);
   uint8_t* reserve(uint32_t len);
   bool unreserve(uint32_t len);
 
-  bool add_String(const char* string);
-  bool add_U32(uint32_t ul);
-  bool add_S32(int32_t l);
-  bool add_U8(uint8_t c);
-  bool add_U64(uint64_t ull);
-  bool add_double(double d);
+  void add_String(const char* string);
+  void add_U32(uint32_t ul);
+  void add_S32(int32_t l);
+  void add_U8(uint8_t c);
+  void add_U64(uint64_t ull);
+  void add_double(double d);
 
   uint8_t* getPtr() { return buffer; }
   uint32_t getLen() { return bufUsed; }
@@ -65,12 +65,11 @@ public:
   void     setLen(uint32_t len) { bufUsed = len; }
 
 private:
-  uint8_t* buffer;
   uint32_t bufSize;
+  uint8_t* buffer;
   uint32_t bufUsed;
 
-  void initBuffers();
-  bool checkExtend(uint32_t by);
+  void checkExtend(uint32_t by);
 
   const static uint32_t headerLength          = 12;
   const static uint32_t userDataLenPos        = 8;

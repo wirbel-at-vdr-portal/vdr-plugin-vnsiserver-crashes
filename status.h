@@ -25,12 +25,16 @@
 #pragma once
 
 #include <vdr/thread.h>
+
 #include <list>
 #include <memory>
+#include <mutex>
+
 #include "vnsitimer.h"
 #include "vnsiclient.h"
+#include "tools.h"
 
-class cVNSIClient;
+VNSI_DECLARE_POINTER( cVNSIClient );
 
 class cVNSIStatus : public cThread
 {
@@ -46,10 +50,10 @@ public:
 
   void AddClient(int fd, unsigned int id, const char *ClientAdr, CVNSITimers &timers);
 
-protected:
+private:
   virtual void Action(void);
 
-  std::list<std::shared_ptr<cVNSIClient>> m_clients;
-  cMutex m_mutex;
-  CVNSITimers *m_vnsiTimers;
+  std::list<cVNSIClientSharedPtr> 	m_clients;
+  std::mutex						m_mutex;
+  CVNSITimers*						m_vnsiTimers;
 };
