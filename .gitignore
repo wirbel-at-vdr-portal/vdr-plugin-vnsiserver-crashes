@@ -1,9 +1,10 @@
 .dependencies
 *.o
 *.so
+*.so.*
 *~
-po/*.pot
-po/*.mo
+*.pot
+*.mo
 .kdev4/
 
 # Don't add patch files
