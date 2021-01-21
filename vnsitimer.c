@@ -541,7 +541,8 @@ void CVNSITimers::Action()
     if (modified)
       Timers->SetModified();
     timerState.Remove(modified);
-    SchedulesStateKey.Remove(modified);
+    if (SchedulesStateKey.InLock())
+      SchedulesStateKey.Remove(modified);
   }
 
 #endif
