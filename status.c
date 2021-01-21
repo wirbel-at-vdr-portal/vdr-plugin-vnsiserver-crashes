@@ -319,7 +319,7 @@ void cVNSIStatus::Action(void)
 					std::for_each( m_clients.begin(), m_clients.end(),
 							       [](const cVNSIClientSharedPtr& client)
 								   {
-						 	 	       client->ChannelsChange();
+						 	 	       client->RecordingsChange();
 								   } );
 					lock.unlock();
 				}
