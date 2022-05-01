@@ -1,6 +1,12 @@
 VDR Plugin 'vnsiserver' Revision History
 ----------------------------------------
 
+2022-05-01: Version 1.8.1
+
+- Fixed sporadic deadlock of VDR. Thanks to mdre@vdr-portal.
+- Fixed 'no data' messages. Thanks to mdre@vdr-portal.
+- Fixed abort on non-hold lock in CVNSITimers::Action(). Thanks to @ralf1070.
+
 2018-10-19: Version 1.8.0
 
 - see gibhub history
