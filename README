@@ -16,7 +16,7 @@ the Free Software Foundation; either version 2 of the License, or
 See the file COPYING for more information.
 
 Latest version available at: 
-https://github.com/FernetMenta/vdr-plugin-vnsiserver
+https://github.com/vdr-projects/vdr-plugin-vnsiserver
 
 -----------------------------------------------------------------------------
 2. Compile in VDR's source tree
@@ -25,12 +25,12 @@ https://github.com/FernetMenta/vdr-plugin-vnsiserver
 Get VDR sources.
 
    $ cd <path to vdr>/PLUGINS/src
-   $ git clone https://github.com/FernetMenta/vdr-plugin-vnsiserver
+   $ git clone https://github.com/vdr-projects/vdr-plugin-vnsiserver
    $ ln -s vdr-plugin-vnsiserver vnsiserver
 
 On newer VDR Versions (2.2.0) plugin can be build and installed alone, use:
 
-   $ git clone https://github.com/FernetMenta/vdr-plugin-vnsiserver
+   $ git clone https://github.com/vdr-projects/vdr-plugin-vnsiserver
    $ cd vdr-plugin-vnsiserver
    $ make
    $ sudo make install
