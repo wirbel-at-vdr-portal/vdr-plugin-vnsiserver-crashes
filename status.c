@@ -356,7 +356,7 @@ void cVNSIStatus::Action(void)
 			{
 				if ( epgState.isModified() )
 				{
-					INFOLOG("Requesting clients to reload timers");
+					DEBUGLOG("Requesting clients to load epg");
 					lock.lock();
 					std::for_each( m_clients.begin(), m_clients.end(),
 					               [](const cVNSIClientSharedPtr& client)
