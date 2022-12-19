@@ -1,6 +1,10 @@
 VDR Plugin 'vnsiserver' Revision History
 ----------------------------------------
 
+2022-12-19: Version 1.8.2
+
+- Reduce logs if not in "debug mode". Thanks to @cjmayo.
+
 2022-05-01: Version 1.8.1
 
 - Fixed sporadic deadlock of VDR. Thanks to mdre@vdr-portal.
