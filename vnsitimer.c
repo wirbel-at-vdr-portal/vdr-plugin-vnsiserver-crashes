@@ -449,6 +449,9 @@ void CVNSITimers::Action()
             if (event->EndTime() < time(nullptr))
               continue;
 
+            if (event->Title() == nullptr)
+              continue;
+
             std::string title(event->Title());
             std::smatch m;
             std::regex e(Convert(searchTimer.m_search));
