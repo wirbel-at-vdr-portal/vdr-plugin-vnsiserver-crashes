@@ -1,6 +1,10 @@
 VDR Plugin 'vnsiserver' Revision History
 ----------------------------------------
 
+2023-02-11: Version 1.8.3
+
+- Fix crash when epg has no title. Thanks to @repojohnray
+
 2022-12-19: Version 1.8.2
 
 - Reduce logs if not in "debug mode". Thanks to @cjmayo.
