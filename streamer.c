@@ -54,6 +54,7 @@ cLiveStreamer::cLiveStreamer(int clientID, bool bAllowRDS, int protocol, uint8_t
  , m_ClientID(clientID)
  , m_scanTimeout(timeout)
  , m_Demuxer(bAllowRDS)
+ , m_Event()
  , m_VideoInput(m_Event)
 {
   m_protocolVersion = protocol;

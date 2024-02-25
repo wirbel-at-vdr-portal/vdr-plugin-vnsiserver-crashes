@@ -185,7 +185,7 @@ void cVNSIChannelFilter::StoreWhitelist(bool radio)
     wfile.open(filename);
     if(wfile.is_open())
     {
-      for (const auto i : *whitelist)
+      for (auto& i : *whitelist)
       {
         wfile << i.m_name << '|' << i.m_caid << '\n';
       }

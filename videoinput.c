@@ -462,11 +462,13 @@ std::shared_ptr<cDummyReceiver> cDummyReceiver::Create(cDevice *device)
         {return !p.lock();}), s_Pool.end());
 
   // find an active receiver for the device
-  for (auto p : s_Pool)
+  for (auto& p : s_Pool)
   {
-    auto recv = p.lock();
-    if (!recv->BeenDetached() && recv->Device() == device)
-      return recv;
+    if (not p.expired()) {
+       auto recv = p.lock();
+       if (recv && !recv->BeenDetached() && recv->Device() == device)
+          return recv;
+       }
   }
   auto recv = std::shared_ptr<cDummyReceiver>(new cDummyReceiver);
   if (device->AttachReceiver(recv.get()))

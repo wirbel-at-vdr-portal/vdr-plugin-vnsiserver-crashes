@@ -99,10 +99,10 @@ protected:
   bool m_IFrameSeen = false;
   cVNSIDemuxer m_Demuxer;
   cVideoBuffer *m_VideoBuffer = nullptr;
+  cCondWait m_Event;
   cVideoInput m_VideoInput;
   int m_Priority;
   uint8_t m_Timeshift;
-  cCondWait m_Event;
   time_t m_refTime;
   int64_t m_refDTS;
   int64_t m_curDTS = 0;
