@@ -257,16 +257,16 @@ void cResponsePacket::add_double(double d)
 
 void cResponsePacket::checkExtend(uint32_t by)
 {
-  if ((bufUsed + by) < bufSize)
+  if ((80 + bufUsed + by) < bufSize)
   {
 	  return;
   }
 
-  uint8_t* newBuf = (uint8_t*)realloc(buffer, bufSize + by);
+  uint8_t* newBuf = (uint8_t*)realloc(buffer, bufSize + 512 + by);
   if (!newBuf)
   {
 	  throw std::bad_alloc();
   }
   buffer = newBuf;
-  bufSize += by;
+  bufSize += 512 + by;
 }
