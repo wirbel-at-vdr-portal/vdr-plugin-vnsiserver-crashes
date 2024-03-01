@@ -1152,67 +1152,56 @@ bool cVNSIClient::processCHANNELS_GetChannels(cRequestPacket &req) /* OPCODE 63 
   bool radio = req.extract_U32();
   bool filter = req.extract_U8();
 
-#if VDRVERSNUM >= 20301
-  cStateKey ChannelsKey(true);
-  const cChannels *Channels = cChannels::GetChannelsRead(ChannelsKey);
-#else
-  Channels.Lock(false);
-#endif
+  cStateKey StateKey;
+  if (const cChannels *Channels = cChannels::GetChannelsRead(StateKey)) {
+     cResponsePacket resp;
+     resp.init(req.getRequestID());
 
-  cResponsePacket resp;
-  resp.init(req.getRequestID());
+     cString caids;
+     int caid;
+     int caid_idx;
 
-  cString caids;
-  int caid;
-  int caid_idx;
-#if VDRVERSNUM >= 20301
-  for (const cChannel *channel = Channels->First(); channel; channel = Channels->Next(channel))
-#else
-  for (cChannel *channel = Channels.First(); channel; channel = Channels.Next(channel))
-#endif
-  {
-    if (radio != cVNSIChannelFilter::IsRadio(channel))
-      continue;
+     for (const cChannel *channel = Channels->First(); channel; channel = Channels->Next(channel))
+     {
+       if (radio != cVNSIChannelFilter::IsRadio(channel))
+         continue;
 
-    // skip invalid channels
-    if (channel->Sid() == 0)
-      continue;
+       // skip invalid channels
+       if (channel->Sid() == 0)
+         continue;
 
-    if (endswith(channel->Name(), "OBSOLETE"))
-      continue;
+       if (endswith(channel->Name(), "OBSOLETE"))
+         continue;
 
-    // check filter
-    if (filter && !VNSIChannelFilter.PassFilter(*channel))
-      continue;
+       // check filter
+       if (filter && !VNSIChannelFilter.PassFilter(*channel))
+         continue;
 
-    uint32_t uuid = CreateChannelUID(channel);
-    resp.add_U32(channel->Number());
-    resp.add_String(m_toUTF8.Convert(channel->Name()));
-    resp.add_String(m_toUTF8.Convert(channel->Provider()));
-    resp.add_U32(uuid);
-    resp.add_U32(channel->Ca(0));
-    caid_idx = 0;
-    caids = "caids:";
-    while((caid = channel->Ca(caid_idx)) != 0)
-    {
-      caids = cString::sprintf("%s%d;", (const char*)caids, caid);
-      caid_idx++;
-    }
-    resp.add_String((const char*)caids);
-    if (m_protocolVersion >= 6)
-    {
-      resp.add_String(CreatePiconRef(channel));
-    }
+       uint32_t uuid = CreateChannelUID(channel);
+       resp.add_U32(channel->Number());
+       resp.add_String(m_toUTF8.Convert(channel->Name()));
+       resp.add_String(m_toUTF8.Convert(channel->Provider()));
+       resp.add_U32(uuid);
+       resp.add_U32(channel->Ca(0));
+       caid_idx = 0;
+       caids = "caids:";
+       while((caid = channel->Ca(caid_idx)) != 0)
+       {
+         caids = cString::sprintf("%s%d;", (const char*)caids, caid);
+         caid_idx++;
+       }
+       resp.add_String((const char*)caids);
+       if (m_protocolVersion >= 6)
+       {
+         resp.add_String(CreatePiconRef(channel));
+       }
 
-    // create entry in EPG map on first query
-    m_epgUpdate.insert(std::make_pair(uuid, sEpgUpdate()));
-  }
+       // create entry in EPG map on first query
+       m_epgUpdate.insert(std::make_pair(uuid, sEpgUpdate()));
+       }
 
-#if VDRVERSNUM >= 20301
-  ChannelsKey.Remove();
-#else
-  Channels.Unlock();
-#endif
+     StateKey.Remove();
+     }
 
   resp.finalise();
   m_socket.write(resp.getPtr(), resp.getLen());
