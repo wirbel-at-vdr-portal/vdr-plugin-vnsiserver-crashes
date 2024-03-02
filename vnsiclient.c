@@ -1201,12 +1201,13 @@ bool cVNSIClient::processCHANNELS_GetChannels(cRequestPacket &req) /* OPCODE 63 
        }
 
      StateKey.Remove();
+
+     resp.finalise();
+     m_socket.write(resp.getPtr(), resp.getLen());
+     return true;
      }
 
-  resp.finalise();
-  m_socket.write(resp.getPtr(), resp.getLen());
-
-  return true;
+  return false;
 }
 
 bool cVNSIClient::processCHANNELS_GroupsCount(cRequestPacket &req)
