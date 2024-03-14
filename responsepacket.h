@@ -23,61 +23,43 @@
  *  <http://www.gnu.org/licenses/>.
  *
  */
+#pragma once
+#include <string>
+#include <vector>
+#include <cstdint>
 
-/*
- * This code is taken from VOMP for VDR plugin.
- */
-
-#ifndef VNSI_RESPONSEPACKET_H
-#define VNSI_RESPONSEPACKET_H
-
-#include <stdint.h>
-
-class cResponsePacket
-{
-public:
-  cResponsePacket();
-  ~cResponsePacket();
-
-  void init(uint32_t requestID);
-  void initScan(uint32_t opCode);
-  void initStatus(uint32_t opCode);
-  void initStream(uint32_t opCode, uint32_t streamID, uint32_t duration, int64_t pts, int64_t dts, uint32_t serial);
-  void initOsd(uint32_t opCode, int32_t wnd, int32_t color, int32_t x0, int32_t y0, int32_t x1, int32_t y1);
-  void finalise();
-  void finaliseStream();
-  void finaliseOSD();
-  void copyin(const uint8_t* src, uint32_t len);
-  uint8_t* reserve(uint32_t len);
-  bool unreserve(uint32_t len);
-
-  void add_String(const char* string);
-  void add_U32(uint32_t ul);
-  void add_S32(int32_t l);
-  void add_U8(uint8_t c);
-  void add_U64(uint64_t ull);
-  void add_double(double d);
-
-  uint8_t* getPtr() { return buffer; }
-  uint32_t getLen() { return bufUsed; }
-  uint32_t getStreamHeaderLength() { return headerLengthStream; } ;
-  uint32_t getOSDHeaderLength() { return headerLengthOSD; } ;
-  void     setLen(uint32_t len) { bufUsed = len; }
-
+class cResponsePacket {
 private:
-  uint32_t bufSize;
-  uint8_t* buffer;
-  uint32_t bufUsed;
+  std::vector<uint8_t> data;
+  uint32_t command;
+  size_t extra;
+  bool finalized;
+  void finalize(void);
+  cResponsePacket() {}
+  template <typename T> void Add(T t, int Pos = -1);
+public:
+  // for generic response
+  cResponsePacket(uint32_t Command, uint32_t OpCode);
 
-  void checkExtend(uint32_t by);
+  // for VNSI_CHANNEL_STREAM
+  cResponsePacket(uint32_t OpCode, uint32_t StreamID, uint32_t Duration,
+                  int64_t PTS, int64_t DTS, uint32_t Serial);
 
-  const static uint32_t headerLength          = 12;
-  const static uint32_t userDataLenPos        = 8;
-  const static uint32_t headerLengthStream    = 40;
-  const static uint32_t userDataLenPosStream  = 36;
-  const static uint32_t headerLengthOSD       = 36;
-  const static uint32_t userDataLenPosOSD     = 32;
+  // for VNSI_CHANNEL_OSD
+  cResponsePacket(uint32_t OpCode, int32_t Wnd, int32_t Color,
+                  int32_t X0, int32_t Y0, int32_t X1, int32_t Y1);
+
+  ~cResponsePacket() {}
+
+  void add_U8(uint8_t c, int pos = -1);
+  void add_U32(uint32_t ul, int pos = -1);
+  void add_U64(uint64_t ull, int pos = -1);
+  void add_S32(int32_t l, int pos = -1);
+  void add_double(double d, int pos = -1);
+  void add_String(std::string str, int pos = -1);
+  void add_Buffer(char* p, size_t len, int pos = -1);
+
+  const uint8_t* getPtr(void);
+  size_t getLen(void);
+  void ReportExtraData(size_t Extra);
 };
-
-#endif // VNSI_RESPONSEPACKET_H
-

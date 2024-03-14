@@ -372,7 +372,6 @@ bool cLiveStreamer::StreamChannel(const cChannel *channel, int priority, ISocket
 
   // Send the OK response here, that it is before the Stream end message
   resp->add_U32(VNSI_RET_OK);
-  resp->finalise();
   m_Socket->write(resp->getPtr(), resp->getLen());
 
   Activate(true);
@@ -403,13 +402,11 @@ void cLiveStreamer::sendStreamPacket(sStreamPacket *pkt)
   if (pkt->size == 0)
     return;
 
-  cResponsePacket streamHeader;
-  streamHeader.initStream(VNSI_STREAM_MUXPKT, pkt->id, pkt->duration, pkt->pts, pkt->dts, pkt->serial);
-  streamHeader.setLen(streamHeader.getStreamHeaderLength() + pkt->size);
-  streamHeader.finaliseStream();
+  cResponsePacket streamHeader(VNSI_STREAM_MUXPKT, pkt->id, pkt->duration, pkt->pts, pkt->dts, pkt->serial);
+  streamHeader.ReportExtraData(pkt->size);
 
   std::unique_lock<ISocket> lock( *m_Socket );
-  m_Socket->write(streamHeader.getPtr(), streamHeader.getStreamHeaderLength(), -1, true);
+  m_Socket->write(streamHeader.getPtr(), streamHeader.getLen(), -1, true);
   m_Socket->write(pkt->data, pkt->size);
   lock.unlock();
 
@@ -419,8 +416,7 @@ void cLiveStreamer::sendStreamPacket(sStreamPacket *pkt)
 
 void cLiveStreamer::sendStreamChange()
 {
-  cResponsePacket resp;
-  resp.initStream(VNSI_STREAM_CHANGE, 0, 0, 0, 0, 0);
+  cResponsePacket resp(VNSI_STREAM_CHANGE, 0, 0, 0, 0, 0);
 
   uint32_t FpsScale, FpsRate, Height, Width;
   double Aspect;
@@ -551,7 +547,6 @@ void cLiveStreamer::sendStreamChange()
     }
   }
 
-  resp.finaliseStream();
   m_Socket->write(resp.getPtr(), resp.getLen());
 }
 
@@ -582,16 +577,13 @@ void cLiveStreamer::sendSignalInfo()
      return a empty signalinfo package */
   if (m_Frontend == -2)
   {
-    cResponsePacket resp;
-    resp.initStream(VNSI_STREAM_SIGNALINFO, 0, 0, 0, 0, 0);
+    cResponsePacket resp(VNSI_STREAM_SIGNALINFO, 0, 0, 0, 0, 0);
     resp.add_String(*cString::sprintf("Unknown"));
     resp.add_String(*cString::sprintf("Unknown"));
     resp.add_U32(0);
     resp.add_U32(0);
     resp.add_U32(0);
     resp.add_U32(0);
-
-    resp.finaliseStream();
 
     if (m_statusSocket)
       m_statusSocket->write(resp.getPtr(), resp.getLen());
@@ -627,16 +619,13 @@ void cLiveStreamer::sendSignalInfo()
 
     if (m_Frontend >= 0)
     {
-      cResponsePacket resp;
-      resp.initStream(VNSI_STREAM_SIGNALINFO, 0, 0, 0, 0, 0);
+      cResponsePacket resp(VNSI_STREAM_SIGNALINFO, 0, 0, 0, 0, 0);
       resp.add_String(*cString::sprintf("Analog #%s - %s (%s)", *m_DeviceString, (char *) m_vcap.card, m_vcap.driver));
       resp.add_String("");
       resp.add_U32(0);
       resp.add_U32(0);
       resp.add_U32(0);
       resp.add_U32(0);
-
-      resp.finaliseStream();
 
       if (m_statusSocket)
         m_statusSocket->write(resp.getPtr(), resp.getLen());
@@ -665,8 +654,7 @@ void cLiveStreamer::sendSignalInfo()
 
     if (m_Frontend >= 0)
     {
-      cResponsePacket resp;
-      resp.initStream(VNSI_STREAM_SIGNALINFO, 0, 0, 0, 0, 0);
+      cResponsePacket resp(VNSI_STREAM_SIGNALINFO, 0, 0, 0, 0, 0);
 
       fe_status_t status;
       uint16_t fe_snr;
@@ -788,8 +776,6 @@ void cLiveStreamer::sendSignalInfo()
       resp.add_U32(fe_ber);
       resp.add_U32(fe_unc);
 
-      resp.finaliseStream();
-
       if (m_statusSocket)
         m_statusSocket->write(resp.getPtr(), resp.getLen());
       else
@@ -800,36 +786,33 @@ void cLiveStreamer::sendSignalInfo()
 
 void cLiveStreamer::sendStreamStatus()
 {
-  cResponsePacket resp;
-  resp.initStream(VNSI_STREAM_STATUS, 0, 0, 0, 0, 0);
+  cResponsePacket resp(VNSI_STREAM_STATUS, 0, 0, 0, 0, 0);
   uint16_t error = m_Demuxer.GetError();
   if (error & ERROR_PES_SCRAMBLE)
   {
     INFOLOG("Channel: scrambled (PES) %d", error);
-    resp.add_String(cString::sprintf("Channel: scrambled (%d)", error));
+    resp.add_String(*cString::sprintf("Channel: scrambled (%d)", error));
   }
   else if (error & ERROR_TS_SCRAMBLE)
   {
     INFOLOG("Channel: scrambled (TS) %d", error);
-    resp.add_String(cString::sprintf("Channel: scrambled (%d)", error));
+    resp.add_String(*cString::sprintf("Channel: scrambled (%d)", error));
   }
   else if (error & ERROR_PES_STARTCODE)
   {
     INFOLOG("Channel: startcode %d", error);
-    resp.add_String(cString::sprintf("Channel: encrypted? (%d)", error));
+    resp.add_String(*cString::sprintf("Channel: encrypted? (%d)", error));
   }
   else if (error & ERROR_DEMUX_NODATA)
   {
     INFOLOG("Channel: no data %d", error);
-    resp.add_String(cString::sprintf("Channel: no data"));
+    resp.add_String(*cString::sprintf("Channel: no data"));
   }
   else
   {
     INFOLOG("Channel: unknown error %d", error);
-    resp.add_String(cString::sprintf("Channel: unknown error (%d)", error));
+    resp.add_String(*cString::sprintf("Channel: unknown error (%d)", error));
   }
-
-  resp.finaliseStream();
 
   if (m_statusSocket)
     m_statusSocket->write(resp.getPtr(), resp.getLen());
@@ -842,8 +825,7 @@ void cLiveStreamer::sendStreamTimes()
   if (m_Channel == NULL)
     return;
 
-  cResponsePacket resp;
-  resp.initStream(VNSI_STREAM_TIMES, 0, 0, 0, 0, 0);
+  cResponsePacket resp(VNSI_STREAM_TIMES, 0, 0, 0, 0, 0);
 
   time_t starttime = m_refTime;
   int64_t refDTS = m_refDTS;
@@ -885,7 +867,6 @@ void cLiveStreamer::sendStreamTimes()
   resp.add_U64(refDTS);
   resp.add_U64(mintime);
   resp.add_U64(maxtime);
-  resp.finaliseStream();
 
   if (m_statusSocket)
     m_statusSocket->write(resp.getPtr(), resp.getLen());
@@ -895,25 +876,21 @@ void cLiveStreamer::sendStreamTimes()
 
 void cLiveStreamer::sendBufferStatus()
 {
-  cResponsePacket resp;
-  resp.initStream(VNSI_STREAM_BUFFERSTATS, 0, 0, 0, 0, 0);
+  cResponsePacket resp(VNSI_STREAM_BUFFERSTATS, 0, 0, 0, 0, 0);
   uint32_t start, end;
   bool timeshift;
   m_Demuxer.BufferStatus(timeshift, start, end);
   resp.add_U8(timeshift);
   resp.add_U32(start);
   resp.add_U32(end);
-  resp.finaliseStream();
   m_Socket->write(resp.getPtr(), resp.getLen());
 }
 
 void cLiveStreamer::sendRefTime(sStreamPacket &pkt)
 {
-  cResponsePacket resp;
-  resp.initStream(VNSI_STREAM_REFTIME, 0, 0, 0, 0, 0);
+  cResponsePacket resp(VNSI_STREAM_REFTIME, 0, 0, 0, 0, 0);
   resp.add_U32(pkt.reftime);
   resp.add_U64(pkt.pts);
-  resp.finaliseStream();
   m_Socket->write(resp.getPtr(), resp.getLen());
 }
 

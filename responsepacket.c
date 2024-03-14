@@ -24,18 +24,13 @@
  *
  */
 
-/*
- * This code is taken from VOMP for VDR plugin.
- */
-
 #include "responsepacket.h"
 #include "vnsicommand.h"
 #include "config.h"
 
+#include <iostream>
+#include <cstdlib>
 #include <arpa/inet.h>
-#include <stdlib.h>
-#include <string.h>
-#include <stdexcept>
 
 #ifndef __FreeBSD__
 #include <asm/byteorder.h>
@@ -45,228 +40,142 @@
 #define __cpu_to_be64 htobe64
 #endif
 
-/* Packet format for an RR channel response:
 
-4 bytes = channel ID = 1 (request/response channel)
-4 bytes = request ID (from serialNumber)
-4 bytes = length of the rest of the packet
-? bytes = rest of packet. depends on packet
-*/
-
-cResponsePacket::cResponsePacket()
-	: bufSize( 512 )
-	, buffer( static_cast<uint8_t*>(malloc(bufSize)) )
-	, bufUsed( 0 )
+/*******************************************************************************
+ * cResponsepacket
+ ******************************************************************************/
+cResponsePacket::cResponsePacket(uint32_t Command, uint32_t OpCode)
+ : command(Command), extra(0), finalized(false)
 {
+  data.reserve(12);
+  add_U32(Command);
+  add_U32(OpCode);
+  add_U32(0);        // # of bytes follow
 }
 
-cResponsePacket::~cResponsePacket()
+// for VNSI_CHANNEL_STREAM
+cResponsePacket::cResponsePacket(uint32_t OpCode, uint32_t StreamID, uint32_t Duration,
+                                 int64_t PTS, int64_t DTS, uint32_t Serial) 
+ : command(VNSI_CHANNEL_STREAM), extra(0), finalized(false)
 {
-	free(buffer);
-	buffer = nullptr;
+  data.reserve(40);
+  add_U32(command);
+  add_U32(OpCode);
+  add_U32(StreamID); // Stream ID
+  add_U32(Duration); // Duration
+  add_U64(PTS);      // PTS
+  add_U64(DTS);      // DTS
+  add_U32(Serial);   // Serial
+  add_U32(0);        // # of bytes follow
 }
 
-void cResponsePacket::init(uint32_t requestID)
+// for VNSI_CHANNEL_OSD
+cResponsePacket::cResponsePacket(uint32_t OpCode, int32_t Wnd, int32_t Color,
+                                 int32_t X0, int32_t Y0, int32_t X1, int32_t Y1)
+ : command(VNSI_CHANNEL_OSD), extra(0), finalized(false)
 {
-  bufUsed = 0;
-
-  uint32_t ul;
-
-  ul = htonl(VNSI_CHANNEL_REQUEST_RESPONSE);                     // RR channel
-  memcpy(&buffer[0], &ul, sizeof(uint32_t));
-  ul = htonl(requestID);
-  memcpy(&buffer[4], &ul, sizeof(uint32_t));
-  ul = 0;
-  memcpy(&buffer[userDataLenPos], &ul, sizeof(uint32_t));
-
-  bufUsed = headerLength;
-}
-
-void cResponsePacket::initScan(uint32_t opCode)
-{
-  bufUsed = 0;
-  uint32_t ul;
-
-  ul = htonl(VNSI_CHANNEL_SCAN);                     // RR channel
-  memcpy(&buffer[0], &ul, sizeof(uint32_t));
-  ul = htonl(opCode);
-  memcpy(&buffer[4], &ul, sizeof(uint32_t));
-  ul = 0;
-  memcpy(&buffer[userDataLenPos], &ul, sizeof(uint32_t));
-
-  bufUsed = headerLength;
-}
-
-void cResponsePacket::initStatus(uint32_t opCode)
-{
-  bufUsed = 0;
-  uint32_t ul;
-
-  ul = htonl(VNSI_CHANNEL_STATUS);                     // RR channel
-  memcpy(&buffer[0], &ul, sizeof(uint32_t));
-  ul = htonl(opCode);
-  memcpy(&buffer[4], &ul, sizeof(uint32_t));
-  ul = 0;
-  memcpy(&buffer[userDataLenPos], &ul, sizeof(uint32_t));
-
-  bufUsed = headerLength;
-}
-
-void cResponsePacket::initStream(uint32_t opCode, uint32_t streamID, uint32_t duration, int64_t pts, int64_t dts, uint32_t serial)
-{
-  bufUsed = 0;
-  uint32_t ul;
-  uint64_t ull;
-
-  ul =  htonl(VNSI_CHANNEL_STREAM);            // stream channel
-  memcpy(&buffer[0], &ul, sizeof(uint32_t));
-  ul = htonl(opCode);                          // Stream packet operation code
-  memcpy(&buffer[4], &ul, sizeof(uint32_t));
-  ul = htonl(streamID);                        // Stream ID
-  memcpy(&buffer[8], &ul, sizeof(uint32_t));
-  ul = htonl(duration);                        // Duration
-  memcpy(&buffer[12], &ul, sizeof(uint32_t));
-  ull = __cpu_to_be64(pts);                    // PTS
-  memcpy(&buffer[16], &ull, sizeof(uint64_t));
-  ull = __cpu_to_be64(dts);                    // DTS
-  memcpy(&buffer[24], &ull, sizeof(uint64_t));
-  ul = htonl(serial);
-  memcpy(&buffer[32], &ul, sizeof(uint32_t));
-  ul = 0;
-  memcpy(&buffer[userDataLenPosStream], &ul, sizeof(uint32_t));
-
-  bufUsed = headerLengthStream;
-}
-
-void cResponsePacket::initOsd(uint32_t opCode, int32_t wnd, int32_t color, int32_t x0, int32_t y0, int32_t x1, int32_t y1)
-{
-  bufUsed = 0;
-  uint32_t ul;
-  int32_t l;
-
-  ul =  htonl(VNSI_CHANNEL_OSD);               // stream OSD
-  memcpy(&buffer[0], &ul, sizeof(uint32_t));
-  ul = htonl(opCode);                          // OSD operation code
-  memcpy(&buffer[4], &ul, sizeof(uint32_t));
-  l = htonl(wnd);                              // Window
-  memcpy(&buffer[8], &l, sizeof(int32_t));
-  l = htonl(color);                            // Color
-  memcpy(&buffer[12], &l, sizeof(int32_t));
-  l = htonl(x0);                               // x0
-  memcpy(&buffer[16], &l, sizeof(int32_t));
-  l = htonl(y0);                               // y0
-  memcpy(&buffer[20], &l, sizeof(int32_t));
-  l = htonl(x1);                               // x1
-  memcpy(&buffer[24], &l, sizeof(int32_t));
-  l = htonl(y1);                               // y1
-  memcpy(&buffer[28], &l, sizeof(int32_t));
-  ul = 0;
-  memcpy(&buffer[userDataLenPosOSD], &ul, sizeof(uint32_t));
-
-  bufUsed = headerLengthOSD;
-}
-
-void cResponsePacket::finalise()
-{
-  uint32_t ul = htonl(bufUsed - headerLength);
-  memcpy(&buffer[userDataLenPos], &ul, sizeof(uint32_t));
-}
-
-void cResponsePacket::finaliseStream()
-{
-  uint32_t ul = htonl(bufUsed - headerLengthStream);
-  memcpy(&buffer[userDataLenPosStream], &ul, sizeof(uint32_t));
-}
-
-void cResponsePacket::finaliseOSD()
-{
-  uint32_t ul = htonl(bufUsed - headerLengthOSD);
-  memcpy(&buffer[userDataLenPosOSD], &ul, sizeof(uint32_t));
-}
-
-void cResponsePacket::copyin(const uint8_t* src, uint32_t len)
-{
-  checkExtend(len);
-
-  memcpy(buffer + bufUsed, src, len);
-  bufUsed += len;
-}
-
-uint8_t* cResponsePacket::reserve(uint32_t len) {
-  checkExtend(len);
-  uint8_t* result = buffer + bufUsed;
-  bufUsed += len;
-  return result;
-}
-
-bool cResponsePacket::unreserve(uint32_t len) {
-  if(bufUsed < len) return false;
-  bufUsed -= len;
-  return true;
-}
-
-void cResponsePacket::add_String(const char* string)
-{
-  uint32_t len = strlen(string) + 1;
-  checkExtend(len);
-  memcpy(buffer + bufUsed, string, len);
-  bufUsed += len;
-}
-
-void cResponsePacket::add_U32(uint32_t ul)
-{
-  checkExtend(sizeof(uint32_t));
-  uint32_t tmp = htonl(ul);
-  memcpy(&buffer[bufUsed], &tmp, sizeof(uint32_t));
-  bufUsed += sizeof(uint32_t);
-}
-
-void cResponsePacket::add_U8(uint8_t c)
-{
-  checkExtend(sizeof(uint8_t));
-  buffer[bufUsed] = c;
-  bufUsed += sizeof(uint8_t);
-}
-
-void cResponsePacket::add_S32(int32_t l)
-{
-  checkExtend(sizeof(int32_t));
-  int32_t tmp = htonl(l);
-  memcpy(&buffer[bufUsed], &tmp, sizeof(int32_t));
-  bufUsed += sizeof(int32_t);
-}
-
-void cResponsePacket::add_U64(uint64_t ull)
-{
-  checkExtend(sizeof(uint64_t));
-  uint64_t tmp = __cpu_to_be64(ull);
-  memcpy(&buffer[bufUsed], &tmp, sizeof(uint64_t));
-  bufUsed += sizeof(uint64_t);
-}
-
-void cResponsePacket::add_double(double d)
-{
-  checkExtend(sizeof(double));
-  uint64_t ull;
-  memcpy(&ull, &d, sizeof(double));
-  ull = __cpu_to_be64(ull);
-  memcpy(&buffer[bufUsed], &ull, sizeof(uint64_t));
-  bufUsed += sizeof(uint64_t);
+  data.reserve(36);
+  add_U32(command);
+  add_U32(OpCode);
+  add_S32(Wnd);      // Window
+  add_S32(Color);    // Color
+  add_S32(X0);       // X0
+  add_S32(Y0);       // Y0
+  add_S32(X1);       // X1
+  add_S32(Y1);       // Y1
+  add_U32(0);        // # of bytes follow
 }
 
 
-void cResponsePacket::checkExtend(uint32_t by)
-{
-  if ((80 + bufUsed + by) < bufSize)
-  {
-	  return;
-  }
+void cResponsePacket::add_Buffer(char* p, size_t len, int pos) {
+  const uint8_t* P = reinterpret_cast<const uint8_t*>(p);
+  if (pos < 0) {
+     for(size_t i=0; i<len; i++)
+        data.push_back(*P++);
+     }
+  else {
+     auto it = data.begin() + pos;
+     for(size_t i=0; i<len; i++)
+        *it++ = *P++;
+     }
+}
 
-  uint8_t* newBuf = (uint8_t*)realloc(buffer, bufSize + 512 + by);
-  if (!newBuf)
-  {
-	  throw std::bad_alloc();
-  }
-  buffer = newBuf;
-  bufSize += 512 + by;
+void cResponsePacket::add_String(std::string str, int pos) {
+  char* p = (char*) str.data();
+  add_Buffer(p, str.size() + 1, pos);
+}
+
+template <typename T>
+void cResponsePacket::Add(T t, int pos) {
+  uint8_t* p = reinterpret_cast<uint8_t*>(&t);
+  if (pos < 0) {
+     for(size_t i=0; i<sizeof(T); i++)
+        data.push_back(*p++);
+     }
+  else {
+     auto it = data.begin() + pos;
+     for(size_t i=0; i<sizeof(T); i++)
+        *it++ = *p++;
+     }
+}
+
+template void cResponsePacket::Add<uint8_t>(uint8_t,int);
+template void cResponsePacket::Add<uint32_t>(uint32_t,int);
+template void cResponsePacket::Add<uint64_t>(uint64_t,int);
+template void cResponsePacket::Add<int32_t>(int32_t,int);
+
+
+void cResponsePacket::add_U8(uint8_t c, int pos) {
+  Add(c, pos);
+}
+
+void cResponsePacket::add_U32(uint32_t ul, int pos) {
+  uint32_t UL = htonl(ul);
+  Add(UL, pos);
+}
+
+void cResponsePacket::add_U64(uint64_t ull, int pos) {
+  uint64_t ULL = htobe64(ull);
+  Add(ULL, pos);
+}
+
+void cResponsePacket::add_S32(int32_t l, int pos) {
+  int32_t I32 = htonl(l);
+  Add(I32, pos);
+}
+
+void cResponsePacket::add_double(double d, int pos) {
+  uint64_t* ULL = reinterpret_cast<uint64_t*>(&d);
+  *ULL = htobe64(*ULL);
+  Add(*ULL, pos);
+}
+
+void cResponsePacket::finalize(void) {
+  if (command == VNSI_CHANNEL_STREAM)
+     add_U32(data.size() - 40 + extra, 36);
+  else if (command == VNSI_CHANNEL_OSD)
+     add_U32(data.size() - 36 + extra, 32);
+  else
+     add_U32(data.size() - 12 + extra, 8);
+}
+
+const uint8_t* cResponsePacket::getPtr(void) {
+  if (not finalized) {
+     finalized = true;
+     finalize();
+     }
+  return data.data();
+}
+
+size_t cResponsePacket::getLen(void) {
+  if (not finalized) {
+     finalized = true;
+     finalize();
+     }
+  return data.size();
+}
+
+// used, if this packet is immediatley followed by extra data.
+void cResponsePacket::ReportExtraData(size_t Extra) {
+  extra = Extra;
 }

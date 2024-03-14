@@ -246,13 +246,11 @@ void cVnsiOsdProvider::SendOsdPacket(int cmd, int wnd, int color, int x0, int y0
   if (!m_Socket)
     return;
 
-  cResponsePacket m_OsdPacket;
-  m_OsdPacket.initOsd(cmd, wnd, color, x0, y0, x1, y1);
-  m_OsdPacket.setLen(m_OsdPacket.getOSDHeaderLength() + size);
-  m_OsdPacket.finaliseOSD();
+  cResponsePacket m_OsdPacket(cmd, wnd, color, x0, y0, x1, y1);
+  m_OsdPacket.ReportExtraData(size);
 
   std::unique_lock<ISocket> socketLock(*m_Socket);
-  m_Socket->write(m_OsdPacket.getPtr(), m_OsdPacket.getOSDHeaderLength(), -1, (size > 0) ? true: false);
+  m_Socket->write(m_OsdPacket.getPtr(), m_OsdPacket.getLen(), -1, (size > 0) ? true: false);
   if (size)
     m_Socket->write(data, size);
 }
